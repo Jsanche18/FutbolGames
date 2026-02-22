@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum GameType {
+  LINEUP
+  HANGMAN
+  SORT
+  MULTIPLAYER
+}
+
+enum SessionStatus {
+  PENDING
+  ACTIVE
+  FINISHED
+  ABANDONED
+}
+
+enum RoomStatus {
+  OPEN
+  IN_PROGRESS
+  CLOSED
+}
+
+model User {
+  id            Int              @id @default(autoincrement())
+  email         String           @unique
+  passwordHash  String
+  createdAt     DateTime         @default(now())
+  profile       Profile?
+  roomPlayers   RoomPlayer[]
+  guessLogs     GuessLog[]
+  matchWins     MatchHistory[]   @relation("MatchWinner")
+  roundWins     GameRound[]      @relation("RoundWinner")
+  refreshTokens RefreshToken[]
+}
+
+model Profile {
+  userId     Int     @id
+  nickname   String
+  avatarUrl  String?
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MatchHistory {
+  id             Int       @id @default(autoincrement())
+  gameType       GameType
+  playersJson    Json?
+  winnerUserId   Int?
+  finalScoreJson Json?
+  createdAt      DateTime  @default(now())
+  winner         User?     @relation("MatchWinner", fields: [winnerUserId], references: [id])
+}
+
+model GameSession {
+  id         Int           @id @default(autoincrement())
+  gameType   GameType
+  status     SessionStatus @default(PENDING)
+  createdAt  DateTime      @default(now())
+  rounds     GameRound[]
+  guessLogs  GuessLog[]
+}
+
+model GameRound {
+  id                 Int       @id @default(autoincrement())
+  sessionId          Int
+  roundNumber        Int
+  secretPlayerApiId  Int
+  startAt            DateTime
+  endAt              DateTime
+  winnerUserId       Int?
+  session            GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  winner             User?       @relation("RoundWinner", fields: [winnerUserId], references: [id])
+
+  @@index([sessionId])
+}
+
+model Room {
+  id         Int        @id @default(autoincrement())
+  code       String     @unique
+  status     RoomStatus @default(OPEN)
+  createdAt  DateTime   @default(now())
+  players    RoomPlayer[]
+  guessLogs  GuessLog[]
+}
+
+model RoomPlayer {
+  roomId    Int
+  userId    Int
+  score     Int      @default(0)
+  joinedAt  DateTime @default(now())
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, userId])
+  @@index([userId])
+}
+
+model GuessLog {
+  id         Int       @id @default(autoincrement())
+  roomId     Int?
+  sessionId  Int?
+  userId     Int
+  guessText  String
+  createdAt  DateTime  @default(now())
+  room       Room?     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  session    GameSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model LineupTemplate {
+  id         Int      @id @default(autoincrement())
+  name       String
+  rulesJson  Json
+  createdAt  DateTime @default(now())
+}
+
+model Country {
+  id     Int     @id @default(autoincrement())
+  name   String
+  code   String?
+
+  @@index([code])
+}
+
+model League {
+  id          Int     @id @default(autoincrement())
+  apiId       Int     @unique
+  name        String
+  countryCode String?
+  season      Int
+  logoUrl     String?
+  teams       Team[]
+  players     Player[]
+
+  @@index([apiId])
+}
+
+model Team {
+  id          Int     @id @default(autoincrement())
+  apiId       Int     @unique
+  name        String
+  countryCode String?
+  leagueApiId Int?
+  season      Int?
+  logoUrl     String?
+  isNational  Boolean @default(false)
+  league      League? @relation(fields: [leagueApiId], references: [apiId])
+  players     Player[]
+
+  @@index([apiId])
+  @@index([leagueApiId])
+}
+
+model Player {
+  id         Int     @id @default(autoincrement())
+  apiId      Int     @unique
+  name       String
+  firstname  String?
+  lastname   String?
+  age        Int?
+  nationality String?
+  photoUrl   String?
+  position   String?
+  teamApiId  Int?
+  leagueApiId Int?
+  season     Int?
+  team       Team?   @relation(fields: [teamApiId], references: [apiId])
+  league     League? @relation(fields: [leagueApiId], references: [apiId])
+  stats      PlayerStat[]
+  trophies   PlayerTrophy[]
+
+  @@index([apiId])
+  @@index([teamApiId])
+}
+
+model PlayerStat {
+  id          Int     @id @default(autoincrement())
+  playerApiId Int
+  season      Int?
+  leagueApiId Int?
+  teamApiId   Int?
+  appearances Int?
+  goals       Int?
+  assists     Int?
+  minutes     Int?
+  rating      String?
+  player      Player @relation(fields: [playerApiId], references: [apiId], onDelete: Cascade)
+
+  @@index([playerApiId])
+  @@index([leagueApiId])
+  @@unique([playerApiId, leagueApiId, season, teamApiId])
+}
+
+model PlayerTrophy {
+  id              Int     @id @default(autoincrement())
+  playerApiId     Int
+  title           String
+  season          String?
+  teamName        String?
+  competitionName String?
+  player          Player @relation(fields: [playerApiId], references: [apiId], onDelete: Cascade)
+
+  @@index([playerApiId])
+}
+
+model RefreshToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  tokenHash  String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  revokedAt  DateTime?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
