@@ -3,6 +3,7 @@ import { Queue, Worker } from 'bullmq';
 import { RedisService } from '../common/redis/redis.service';
 import { ApiFootballClient } from '../football/api-football.client';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class SyncService implements OnModuleInit {
@@ -12,6 +13,7 @@ export class SyncService implements OnModuleInit {
     private redis: RedisService,
     private api: ApiFootballClient,
     private prisma: PrismaService,
+    private configService: ConfigService,
   ) {}
 
   onModuleInit() {
@@ -67,6 +69,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handleLeagues(season?: number) {
+    await this.throttle();
     const data = await this.api.getLeagues({ season });
     const response = (data as any)?.response || [];
     const leagues = response.map((item: any) => ({
@@ -81,6 +84,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handleTeams(leagueApiId: number, season?: number) {
+    await this.throttle();
     const data = await this.api.getTeams({ league: leagueApiId, season });
     const response = (data as any)?.response || [];
     const teams = response.map((item: any) => ({
@@ -97,6 +101,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handlePlayers(teamApiId: number, season?: number) {
+    await this.throttle();
     const data = await this.api.getPlayers({ team: teamApiId, season });
     const response = (data as any)?.response || [];
     for (const item of response) {
@@ -164,6 +169,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handlePlayer(apiId: number, season?: number) {
+    await this.throttle();
     const data = await this.api.getPlayer({ id: apiId, season });
     const response = (data as any)?.response || [];
     const item = response[0];
@@ -204,13 +210,73 @@ export class SyncService implements OnModuleInit {
     const teamApiIds = await this.handleTeams(leagueApiId, season);
     for (const teamApiId of teamApiIds) {
       await this.handlePlayers(teamApiId, season);
+      await this.throttle();
     }
   }
 
   private async handleBootstrap(season?: number) {
-    const leagueApiIds = await this.handleLeagues(season);
-    for (const leagueApiId of leagueApiIds) {
-      await this.handleLeaguePlayers(leagueApiId, season);
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const leagues = await this.api.getLeagues({ season: resolvedSeason });
+    const response = (leagues as any)?.response || [];
+    const allowed = this.getBootstrapLeagueNames();
+
+    const selected = response
+      .map((item: any) => ({
+        apiId: item.league?.id,
+        name: item.league?.name,
+        country: item.country?.name,
+        logoUrl: item.league?.logo,
+        season: item.seasons?.[0]?.year || resolvedSeason,
+        countryCode: item.country?.code,
+      }))
+      .filter((l: any) => l.apiId && this.matchesLeague(l.name, allowed));
+
+    if (selected.length > 0) {
+      await this.prisma.league.createMany({
+        data: selected.map((l: any) => ({
+          apiId: l.apiId,
+          name: l.name,
+          countryCode: l.countryCode,
+          season: l.season,
+          logoUrl: l.logoUrl,
+        })),
+        skipDuplicates: true,
+      });
     }
+
+    for (const league of selected) {
+      await this.handleLeaguePlayers(league.apiId, resolvedSeason);
+      await this.throttle();
+    }
+  }
+
+  private getDefaultSeason() {
+    const raw = this.configService.get<string>('DEFAULT_SEASON');
+    if (raw && Number(raw)) return Number(raw);
+    return 2025;
+  }
+
+  private getBootstrapLeagueNames() {
+    const raw = this.configService.get<string>('BOOTSTRAP_LEAGUES');
+    if (raw) {
+      return raw
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+    }
+    return ['La Liga', 'Premier League', 'Serie A', 'Bundesliga', 'Ligue 1', 'Major League Soccer', 'MLS'];
+  }
+
+  private matchesLeague(name: string | undefined, allowed: string[]) {
+    if (!name) return false;
+    const normalized = name.toLowerCase();
+    return allowed.some((candidate) => normalized === candidate.toLowerCase());
+  }
+
+  private async throttle() {
+    const raw = this.configService.get<string>('SYNC_DELAY_MS');
+    const delayMs = raw ? Number(raw) : 1200;
+    if (!delayMs || delayMs <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 }

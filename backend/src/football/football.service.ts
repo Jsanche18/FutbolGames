@@ -83,7 +83,7 @@ export class FootballService {
   private getDefaultSeason() {
     const raw = this.configService.get<string>('DEFAULT_SEASON');
     if (raw && Number(raw)) return Number(raw);
-    return 2024;
+    return 2025;
   }
 
   async searchPlayers(q?: string, teamApiId?: number, leagueApiId?: number, season?: number, page?: number) {
