@@ -21,13 +21,14 @@ export default function PlayerSearch({ onSelect }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const timer = useRef<NodeJS.Timeout | null>(null);
+  const season = Number(process.env.NEXT_PUBLIC_DEFAULT_SEASON || 2024);
 
   const search = async (value: string) => {
     if (!value) {
       setResults([]);
       return;
     }
-    const res = await api.get('/players/search', { params: { q: value } });
+    const res = await api.get('/players/search', { params: { q: value, season } });
     const items = res.data?.items || [];
     setResults(items.slice(0, 10));
     setActiveIndex(0);

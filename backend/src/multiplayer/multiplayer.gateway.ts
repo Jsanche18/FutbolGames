@@ -14,9 +14,27 @@ import { ConfigService } from '@nestjs/config';
 
 type SocketWithUser = Socket & { userId?: number };
 
+const normalizeOrigin = (value?: string | null) => {
+  if (!value) return '';
+  return value.replace(/\/$/, '');
+};
+
 @WebSocketGateway({
   cors: {
-    origin: process.env.FRONTEND_URL,
+    origin: (origin, callback) => {
+      const envUrl = normalizeOrigin(process.env.FRONTEND_URL);
+      const allowed = new Set(
+        [
+          'http://localhost:3000',
+          'https://futbol-games.vercel.app',
+          envUrl,
+        ].filter(Boolean) as string[],
+      );
+      if (!origin) return callback(null, true);
+      const normalized = normalizeOrigin(origin);
+      if (allowed.has(normalized)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
   },
 })
@@ -35,8 +53,9 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
 
   handleConnection(client: SocketWithUser) {
     const origin = client.handshake.headers.origin as string | undefined;
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL');
-    if (frontendUrl && origin !== frontendUrl) {
+    const frontendUrl = normalizeOrigin(this.configService.get<string>('FRONTEND_URL'));
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (frontendUrl && normalizedOrigin && normalizedOrigin !== frontendUrl) {
       client.disconnect();
       return;
     }

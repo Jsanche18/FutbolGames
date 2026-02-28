@@ -213,9 +213,9 @@ export class GamesService {
       include: { player: true },
       take: 50,
     });
-    if (stats.length === 0) {
+    if (stats.length < Math.max(3, count)) {
       await this.requestDataRefresh(teamApiId, leagueApiId);
-      throw new NotFoundException('No players found. Sync queued, try again shortly.');
+      throw new NotFoundException('Not enough stats found. Sync queued, try again shortly.');
     }
     const shuffled = stats.sort(() => 0.5 - Math.random()).slice(0, count);
     const order = [...shuffled].sort((a, b) => (Number((b as any)[stat]) || 0) - (Number((a as any)[stat]) || 0));

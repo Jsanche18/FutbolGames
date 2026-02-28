@@ -4,6 +4,7 @@ import { RedisService } from '../common/redis/redis.service';
 import { ApiFootballClient } from './api-football.client';
 import { ApiFootballTrophyProvider } from './trophy.provider';
 import { mapAllowedPositions } from './positions';
+import { ConfigService } from '@nestjs/config';
 
 const CACHE_TTL = 60 * 60;
 
@@ -14,6 +15,7 @@ export class FootballService {
     private redis: RedisService,
     private api: ApiFootballClient,
     private trophies: ApiFootballTrophyProvider,
+    private configService: ConfigService,
   ) {}
 
   async getCountries() {
@@ -78,15 +80,22 @@ export class FootballService {
     return data;
   }
 
+  private getDefaultSeason() {
+    const raw = this.configService.get<string>('DEFAULT_SEASON');
+    if (raw && Number(raw)) return Number(raw);
+    return 2024;
+  }
+
   async searchPlayers(q?: string, teamApiId?: number, leagueApiId?: number, season?: number, page?: number) {
-    const cacheKey = `players:search:${q || 'all'}:${teamApiId || 'all'}:${leagueApiId || 'all'}:${season || 'all'}:${page || 1}`;
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const cacheKey = `players:search:${q || 'all'}:${teamApiId || 'all'}:${leagueApiId || 'all'}:${resolvedSeason || 'all'}:${page || 1}`;
     const cached = await this.redis.getJson<any>(cacheKey);
     if (cached) return cached;
     const data = await this.api.getPlayers({
       search: q,
       team: teamApiId,
       league: leagueApiId,
-      season,
+      season: resolvedSeason,
       page,
     });
     await this.redis.setJson(cacheKey, data, CACHE_TTL);
@@ -110,7 +119,31 @@ export class FootballService {
         allowedPositions: mapAllowedPositions(primaryPosition),
       };
     });
-    return { items };
+    if (items.length > 0 || !q) {
+      return { items };
+    }
+
+    const dbPlayers = await this.prisma.player.findMany({
+      where: {
+        name: { contains: q, mode: 'insensitive' },
+        ...(teamApiId ? { teamApiId } : {}),
+        ...(leagueApiId ? { leagueApiId } : {}),
+      },
+      include: { team: true },
+      take: 10,
+    });
+
+    return {
+      items: dbPlayers.map((player) => ({
+        apiId: player.apiId,
+        name: player.name,
+        photoUrl: player.photoUrl ?? undefined,
+        nationality: player.nationality ?? undefined,
+        teamName: player.team?.name ?? undefined,
+        primaryPosition: player.position ?? undefined,
+        allowedPositions: mapAllowedPositions(player.position),
+      })),
+    };
   }
 
   async getPlayerByApiId(apiId: number, season?: number) {

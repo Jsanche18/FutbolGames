@@ -11,13 +11,26 @@ export default function SortPage() {
   const [order, setOrder] = useState<any[]>([]);
   const [result, setResult] = useState<any>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [message, setMessage] = useState('');
 
   const start = async () => {
-    const res = await api.post('/games/sort/start', { stat, count: 5 });
-    setSessionId(res.data.sessionId);
-    setPlayers(res.data.players);
-    setOrder(res.data.players);
-    setResult(null);
+    try {
+      const res = await api.post('/games/sort/start', { stat, count: 5 });
+      setSessionId(res.data.sessionId);
+      setPlayers(res.data.players);
+      setOrder(res.data.players);
+      setResult(null);
+      setMessage('');
+    } catch (err: any) {
+      setPlayers([]);
+      setOrder([]);
+      setSessionId(null);
+      setResult(null);
+      setMessage(
+        err?.response?.data?.message ||
+          'Sin datos todavía. Estamos sincronizando, intenta de nuevo en unos segundos.',
+      );
+    }
   };
 
   const submit = async () => {
@@ -91,6 +104,7 @@ export default function SortPage() {
               </button>
             </div>
           )}
+          {message && <p className="mt-4 text-sm text-lime">{message}</p>}
           {result && (
             <div className="mt-6 space-y-4">
               <p className="text-lime">
