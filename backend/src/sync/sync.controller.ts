@@ -26,4 +26,9 @@ export class SyncController {
   syncPlayer(@Param('apiId') apiId: string, @Query('season') season?: string) {
     return this.syncService.enqueuePlayer(Number(apiId), season ? Number(season) : undefined);
   }
+
+  @Post('bootstrap')
+  syncBootstrap(@Query('season') season?: string) {
+    return this.syncService.enqueueBootstrap(season ? Number(season) : undefined);
+  }
 }

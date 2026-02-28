@@ -11,8 +11,34 @@ async function bootstrap() {
   const frontendUrl = configService.get<string>('FRONTEND_URL');
 
   app.enableCors({
-    origin: frontendUrl,
+    origin: (origin, callback) => {
+      const allowedOrigins = new Set(
+        [
+          'http://localhost:3000',
+          'https://futbol-games.vercel.app',
+          frontendUrl,
+        ].filter(Boolean) as string[],
+      );
+      if (!origin) {
+        return callback(null, true);
+      }
+      if (allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+      'Access-Control-Allow-Origin',
+      'Access-Control-Allow-Credentials',
+      'x-socket-id',
+    ],
   });
 
   app.useGlobalPipes(

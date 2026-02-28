@@ -13,9 +13,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     if (!redisUrl) {
       throw new Error('REDIS_URL is required');
     }
+    const url = new URL(redisUrl);
+    const tls = url.protocol === 'rediss:' ? { rejectUnauthorized: false } : undefined;
     this.client = new Redis(redisUrl, {
       maxRetriesPerRequest: null,
       enableReadyCheck: true,
+      tls,
     });
   }
 
@@ -35,7 +38,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       throw new Error('REDIS_URL is required');
     }
     const url = new URL(redisUrl);
-    const tls = url.protocol === 'rediss:' ? {} : undefined;
+    const tls = url.protocol === 'rediss:' ? { rejectUnauthorized: false } : undefined;
     return {
       host: url.hostname,
       port: Number(url.port || 6379),

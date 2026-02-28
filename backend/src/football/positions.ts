@@ -4,6 +4,11 @@ export function mapAllowedPositions(primaryPosition: string | null | undefined):
   if (!primaryPosition) return [];
   const pos = normalize(primaryPosition);
 
+  if (pos === 'goalkeeper' || pos.includes('goal')) return ['GK'];
+  if (pos === 'defender' || pos.includes('defender')) return ['CB', 'LB', 'RB'];
+  if (pos === 'midfielder' || pos.includes('midfield')) return ['CM', 'CDM', 'CAM', 'LM', 'RM'];
+  if (pos === 'attacker' || pos.includes('attacker')) return ['ST', 'LW', 'RW', 'CF'];
+
   if (pos.includes('goal')) return ['GK'];
   if (pos.includes('centre-back') || pos.includes('center back') || pos === 'cb') {
     return ['CB'];

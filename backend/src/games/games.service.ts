@@ -3,13 +3,18 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { GameType, SessionStatus } from '@prisma/client';
 import { LineupRulesSchema } from './lineup.rules';
+import { SyncService } from '../sync/sync.service';
 
 const HANGMAN_TTL = 60 * 15;
 const SORT_TTL = 60 * 15;
 
 @Injectable()
 export class GamesService {
-  constructor(private prisma: PrismaService, private redis: RedisService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+    private syncService: SyncService,
+  ) {}
 
   async createLineupTemplate(name: string, rulesJson: Record<string, any>) {
     const rules = LineupRulesSchema.parse(rulesJson);
@@ -124,7 +129,10 @@ export class GamesService {
       },
       take: 50,
     });
-    if (candidates.length === 0) throw new NotFoundException('No players found');
+    if (candidates.length === 0) {
+      await this.requestDataRefresh(teamApiId, leagueApiId);
+      throw new NotFoundException('No players found. Sync queued, try again shortly.');
+    }
     const player = candidates[Math.floor(Math.random() * candidates.length)];
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.HANGMAN, status: SessionStatus.ACTIVE },
@@ -205,7 +213,10 @@ export class GamesService {
       include: { player: true },
       take: 50,
     });
-    if (stats.length === 0) throw new NotFoundException('No players found');
+    if (stats.length === 0) {
+      await this.requestDataRefresh(teamApiId, leagueApiId);
+      throw new NotFoundException('No players found. Sync queued, try again shortly.');
+    }
     const shuffled = stats.sort(() => 0.5 - Math.random()).slice(0, count);
     const order = [...shuffled].sort((a, b) => (Number((b as any)[stat]) || 0) - (Number((a as any)[stat]) || 0));
     const session = await this.prisma.gameSession.create({
@@ -269,5 +280,17 @@ export class GamesService {
     if (value.includes('mid')) return 'MID';
     if (value.includes('att') || value.includes('forw') || value.includes('strik')) return 'FWD';
     return null;
+  }
+
+  private async requestDataRefresh(teamApiId?: number, leagueApiId?: number) {
+    if (teamApiId) {
+      await this.syncService.enqueuePlayers(teamApiId);
+      return;
+    }
+    if (leagueApiId) {
+      await this.syncService.enqueueLeaguePlayers(leagueApiId);
+      return;
+    }
+    await this.syncService.enqueueBootstrap();
   }
 }

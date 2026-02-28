@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Panel from '@/components/Panel';
 import PitchBoard from '@/components/PitchBoard';
-import PlayerSearchAutocomplete, { SearchPlayer } from '@/components/PlayerSearchAutocomplete';
+import PlayerSearch, { SearchPlayer } from '@/components/PlayerSearch';
 import SelectedPlayerBanner from '@/components/SelectedPlayerBanner';
 import { api } from '@/lib/api';
 
@@ -151,7 +151,7 @@ export default function LineupPage() {
         <Panel title="Buscar jugador">
           <SelectedPlayerBanner player={selectedPlayer} onClear={() => setSelectedPlayer(null)} />
           <div className="mt-4">
-            <PlayerSearchAutocomplete season={2024} onSelect={setSelectedPlayer} />
+            <PlayerSearch onSelect={setSelectedPlayer} />
           </div>
           <div className="mt-4 flex gap-3">
             <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={submit}>

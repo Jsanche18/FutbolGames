@@ -30,6 +30,10 @@ export class SyncService implements OnModuleInit {
             return this.handlePlayers(job.data.teamApiId, job.data.season);
           case 'sync-player':
             return this.handlePlayer(job.data.apiId, job.data.season);
+          case 'sync-league-players':
+            return this.handleLeaguePlayers(job.data.leagueApiId, job.data.season);
+          case 'sync-bootstrap':
+            return this.handleBootstrap(job.data.season);
           default:
             return null;
         }
@@ -54,6 +58,14 @@ export class SyncService implements OnModuleInit {
     return this.queue.add('sync-player', { apiId, season });
   }
 
+  enqueueLeaguePlayers(leagueApiId: number, season?: number) {
+    return this.queue.add('sync-league-players', { leagueApiId, season });
+  }
+
+  enqueueBootstrap(season?: number) {
+    return this.queue.add('sync-bootstrap', { season });
+  }
+
   private async handleLeagues(season?: number) {
     const data = await this.api.getLeagues({ season });
     const response = (data as any)?.response || [];
@@ -65,6 +77,7 @@ export class SyncService implements OnModuleInit {
       logoUrl: item.league?.logo,
     })).filter((l: any) => l.apiId);
     await this.prisma.league.createMany({ data: leagues, skipDuplicates: true });
+    return leagues.map((l: any) => l.apiId).filter(Boolean);
   }
 
   private async handleTeams(leagueApiId: number, season?: number) {
@@ -80,6 +93,7 @@ export class SyncService implements OnModuleInit {
       isNational: item.team?.national || false,
     })).filter((t: any) => t.apiId);
     await this.prisma.team.createMany({ data: teams, skipDuplicates: true });
+    return teams.map((t: any) => t.apiId).filter(Boolean);
   }
 
   private async handlePlayers(teamApiId: number, season?: number) {
@@ -184,5 +198,19 @@ export class SyncService implements OnModuleInit {
         season: stats?.league?.season,
       },
     });
+  }
+
+  private async handleLeaguePlayers(leagueApiId: number, season?: number) {
+    const teamApiIds = await this.handleTeams(leagueApiId, season);
+    for (const teamApiId of teamApiIds) {
+      await this.handlePlayers(teamApiId, season);
+    }
+  }
+
+  private async handleBootstrap(season?: number) {
+    const leagueApiIds = await this.handleLeagues(season);
+    for (const leagueApiId of leagueApiIds) {
+      await this.handleLeaguePlayers(leagueApiId, season);
+    }
   }
 }

@@ -171,10 +171,7 @@ export class MultiplayerService {
       { key: 'nationality', value: state.secretPlayer.nationality },
       { key: 'league', value: state.secretPlayer.leagueName },
       { key: 'team', value: state.secretPlayer.teamName },
-      { key: 'position', value: state.secretPlayer.position },
       { key: 'photoUrl', value: state.secretPlayer.photoUrl },
-      { key: 'namePattern', value: this.maskName(state.secretPlayer.name) },
-      { key: 'fullName', value: state.secretPlayer.name },
     ];
 
     state.interval = setInterval(() => {
