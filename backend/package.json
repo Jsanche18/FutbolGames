@@ -4,7 +4,7 @@
   "private": true,
   "description": "Backend NestJS for Futbol-11",
   "scripts": {
-    "start": "node dist/main.js",
+    "start": "npm run prisma:deploy && node dist/main.js",
     "start:dev": "nest start --watch",
     "build": "nest build",
     "lint": "eslint . --ext .ts",
