@@ -75,6 +75,9 @@ export default function MultiplayerPage() {
       setGameStarted(false);
       setAwaitingNextRound(false);
       setRoundActive(false);
+      setScreen('lobby');
+      setRoomCode('');
+      setHints([]);
     });
 
     return () => {

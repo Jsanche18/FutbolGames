@@ -211,7 +211,7 @@ export class MultiplayerService {
     });
     await this.prisma.room.update({
       where: { id: state.roomId },
-      data: { status: RoomStatus.CLOSED },
+      data: { status: RoomStatus.OPEN },
     });
     io.to(code).emit('game:finish', { winnerUserId, scores });
     this.roomStates.delete(code);
