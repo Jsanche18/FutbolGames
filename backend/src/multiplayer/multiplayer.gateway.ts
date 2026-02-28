@@ -104,6 +104,11 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
     return this.multiplayerService.startGame(data.code, this.server);
   }
 
+  @SubscribeMessage('round:next')
+  async onNextRound(@MessageBody() data: { code: string }) {
+    return this.multiplayerService.nextRound(data.code, this.server);
+  }
+
   @SubscribeMessage('round:answer')
   async onRoundAnswer(
     @ConnectedSocket() client: SocketWithUser,

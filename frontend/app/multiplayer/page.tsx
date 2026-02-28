@@ -22,6 +22,9 @@ export default function MultiplayerPage() {
   const [answerPhoto, setAnswerPhoto] = useState<string | null>(null);
   const [answerName, setAnswerName] = useState<string | null>(null);
   const [answerHints, setAnswerHints] = useState<any[]>([]);
+  const [currentRound, setCurrentRound] = useState<number>(1);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [awaitingNextRound, setAwaitingNextRound] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -47,22 +50,31 @@ export default function MultiplayerPage() {
       setAnswerName(null);
       setAnswerHints([]);
       setHints([]);
+      setGameStarted(true);
+      setAwaitingNextRound(false);
     });
     socket.on('round:result', (data) => {
       if (data?.started) {
         setRoundActive(true);
+        setAwaitingNextRound(false);
+        if (data?.roundNumber) setCurrentRound(data.roundNumber);
         return;
       }
       setRoundActive(false);
       setAnswerPhoto(data?.photoUrl || null);
       setAnswerName(data?.answer || null);
       setAnswerHints(data?.hints || []);
+      setAwaitingNextRound(!!data?.awaitingNextRound);
+      if (data?.roundNumber) setCurrentRound(data.roundNumber);
       if (data?.winnerUserId) {
         setMessage(`Ganador de ronda: Usuario ${data.winnerUserId}`);
       }
     });
     socket.on('game:finish', (data) => {
       setMessage(`Ganador: ${data.winnerUserId}`);
+      setGameStarted(false);
+      setAwaitingNextRound(false);
+      setRoundActive(false);
     });
 
     return () => {
@@ -91,6 +103,20 @@ export default function MultiplayerPage() {
       setMessage('');
     } catch (err: any) {
       setMessage(err?.message || 'No se pudo iniciar la partida.');
+    }
+  };
+
+  const nextRound = async () => {
+    try {
+      await socket.emitWithAck('round:next', { code: roomCode });
+      setMessage('');
+      setAnswerName(null);
+      setAnswerPhoto(null);
+      setAnswerHints([]);
+      setHints([]);
+      setAwaitingNextRound(false);
+    } catch (err: any) {
+      setMessage(err?.message || 'No se pudo iniciar la siguiente ronda.');
     }
   };
 
@@ -161,9 +187,23 @@ export default function MultiplayerPage() {
 
         {roomCode && screen === 'room' && (
           <Panel title={`Sala ${roomCode}`}>
-            <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={startGame}>
-              Empezar partida
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="rounded-full border border-clay/30 px-3 py-1 text-xs text-clay/70">
+                Ronda {currentRound}
+              </span>
+              <button
+                className="rounded-full bg-lime px-6 py-2 text-ink"
+                onClick={startGame}
+                disabled={gameStarted || roundActive}
+              >
+                Empezar partida
+              </button>
+              {awaitingNextRound && (
+                <button className="rounded-full border border-clay/30 px-6 py-2 text-clay" onClick={nextRound}>
+                  Siguiente ronda
+                </button>
+              )}
+            </div>
 
             <div className="mt-6">
               <h4 className="text-lg font-display text-clay">Jugadores (2-4)</h4>

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { GamesService } from './games.service';
 import {
@@ -43,6 +43,21 @@ export class GamesController {
   @Post('sort/start')
   sortStart(@Body() dto: SortStartDto) {
     return this.gamesService.sortStart(dto.stat, dto.leagueApiId, dto.teamApiId, dto.count);
+  }
+
+  @Get('sort/start')
+  sortStartQuery(
+    @Query('stat') stat?: 'goals' | 'assists' | 'appearances',
+    @Query('leagueApiId') leagueApiId?: string,
+    @Query('teamApiId') teamApiId?: string,
+    @Query('count') count?: string,
+  ) {
+    return this.gamesService.sortStart(
+      (stat || 'goals') as any,
+      leagueApiId ? Number(leagueApiId) : undefined,
+      teamApiId ? Number(teamApiId) : undefined,
+      count ? Number(count) : undefined,
+    );
   }
 
   @Post('sort/submit')

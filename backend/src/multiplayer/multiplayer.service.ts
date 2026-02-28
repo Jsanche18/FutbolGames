@@ -21,6 +21,7 @@ type RoomState = {
   hintIndex: number;
   hintsSent: { key: string; value: any }[];
   roundResolved?: boolean;
+  awaitingNextRound?: boolean;
   interval?: NodeJS.Timeout;
   roundTimeout?: NodeJS.Timeout;
 };
@@ -77,6 +78,9 @@ export class MultiplayerService {
     if (players.length < 2 || players.length > 4) {
       throw new NotFoundException('Room must have between 2 and 4 players');
     }
+    if (room.status === RoomStatus.IN_PROGRESS || this.roomStates.has(code)) {
+      throw new NotFoundException('Game already in progress');
+    }
     await this.prisma.room.update({ where: { id: room.id }, data: { status: RoomStatus.IN_PROGRESS } });
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.MULTIPLAYER, status: SessionStatus.ACTIVE },
@@ -106,12 +110,13 @@ export class MultiplayerService {
       hintIndex: 0,
       hintsSent: [],
       roundResolved: false,
+      awaitingNextRound: false,
     };
     this.roomStates.set(code, state);
 
     this.scheduleHints(code, io);
     io.to(code).emit('game:start', { roundNumber });
-    io.to(code).emit('round:result', { roundId: round.id, started: true });
+    io.to(code).emit('round:result', { roundId: round.id, started: true, roundNumber });
   }
 
   async submitAnswer(code: string, userId: number, guessText: string, io: Server) {
@@ -146,6 +151,8 @@ export class MultiplayerService {
     }
 
     state.roundResolved = true;
+    state.awaitingNextRound = true;
+    this.clearInterval(code);
     await this.prisma.roomPlayer.update({
       where: { roomId_userId: { roomId: state.roomId, userId } },
       data: { score: { increment: 1 } },
@@ -164,6 +171,7 @@ export class MultiplayerService {
       photoUrl: state.secretPlayer.photoUrl,
       hints: state.hintsSent,
       roundNumber: state.roundNumber,
+      awaitingNextRound: true,
     });
 
     const winner = scores.find((s) => s.userId === userId);
@@ -172,8 +180,17 @@ export class MultiplayerService {
       return { ok: true, correct: true, finished: true };
     }
 
-    await this.startRound(code, state.roomId, state.sessionId, state.roundNumber + 1, io);
     return { ok: true, correct: true };
+  }
+
+  async nextRound(code: string, io: Server) {
+    const state = this.roomStates.get(code);
+    if (!state) throw new NotFoundException('Round not started');
+    if (!state.awaitingNextRound) {
+      return { ok: false, reason: 'not_ready' };
+    }
+    await this.startRound(code, state.roomId, state.sessionId, state.roundNumber + 1, io);
+    return { ok: true };
   }
 
   private async finishGame(code: string, io: Server, winnerUserId: number, scores: any[]) {
