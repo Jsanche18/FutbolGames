@@ -90,7 +90,9 @@ export class MultiplayerService {
 
   async submitAnswer(code: string, userId: number, guessText: string, io: Server) {
     const state = this.roomStates.get(code);
-    if (!state) throw new NotFoundException('Round not started');
+    if (!state) {
+      return { ok: false, reason: 'not_started' };
+    }
     const cooldownKey = `cooldown:${code}:${userId}`;
     const redisClient = this.redis.getClient();
     const isCooling = await redisClient.get(cooldownKey);

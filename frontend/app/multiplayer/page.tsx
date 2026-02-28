@@ -14,6 +14,7 @@ export default function MultiplayerPage() {
   const [scores, setScores] = useState<Score[]>([]);
   const [message, setMessage] = useState('');
   const [ready, setReady] = useState(false);
+  const [roundActive, setRoundActive] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -28,6 +29,20 @@ export default function MultiplayerPage() {
     });
     socket.on('game:score', (data) => {
       setScores(data.scores);
+    });
+    socket.on('game:start', () => {
+      setRoundActive(true);
+      setMessage('');
+    });
+    socket.on('round:result', (data) => {
+      if (data?.started) {
+        setRoundActive(true);
+        return;
+      }
+      setRoundActive(false);
+      if (data?.answer) {
+        setMessage(`Respuesta: ${data.answer}`);
+      }
     });
     socket.on('game:finish', (data) => {
       setMessage(`Ganador: ${data.winnerUserId}`);
@@ -57,7 +72,15 @@ export default function MultiplayerPage() {
 
   const sendGuess = async () => {
     if (!roomCode) return;
-    await socket.emitWithAck('round:answer', { code: roomCode, guess });
+    if (!roundActive) {
+      setMessage('La ronda no ha empezado todavía.');
+      return;
+    }
+    const res = await socket.emitWithAck('round:answer', { code: roomCode, guess });
+    if (res?.reason === 'not_started') {
+      setMessage('La ronda no ha empezado todavía.');
+      return;
+    }
     setGuess('');
   };
 
@@ -122,7 +145,11 @@ export default function MultiplayerPage() {
                 onChange={(e) => setGuess(e.target.value)}
                 placeholder="Tu respuesta"
               />
-              <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={sendGuess}>
+              <button
+                className="rounded-full bg-lime px-6 py-2 text-ink"
+                onClick={sendGuess}
+                disabled={!roundActive}
+              >
                 Enviar
               </button>
             </div>
