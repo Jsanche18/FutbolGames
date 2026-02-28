@@ -85,6 +85,8 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
   async onCreateRoom(@ConnectedSocket() client: SocketWithUser) {
     const room = await this.multiplayerService.createRoom(client.userId!);
     client.join(room.code);
+    const players = await this.multiplayerService.getRoomPlayers(room.id);
+    this.server.to(room.code).emit('room:state', { code: room.code, players });
     return { code: room.code };
   }
 
@@ -92,7 +94,8 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
   async onJoinRoom(@ConnectedSocket() client: SocketWithUser, @MessageBody() data: { code: string }) {
     const room = await this.multiplayerService.joinRoom(data.code, client.userId!);
     client.join(room.code);
-    this.server.to(room.code).emit('room:joined', { userId: client.userId });
+    const players = await this.multiplayerService.getRoomPlayers(room.id);
+    this.server.to(room.code).emit('room:state', { code: room.code, players });
     return { code: room.code };
   }
 

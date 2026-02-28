@@ -8,6 +8,7 @@ type RoomState = {
   roomId: number;
   sessionId: number;
   roundNumber: number;
+  roundId?: number;
   secretPlayer: {
     apiId: number;
     name: string;
@@ -18,6 +19,8 @@ type RoomState = {
     leagueName?: string | null;
   };
   hintIndex: number;
+  hintsSent: { key: string; value: any }[];
+  roundResolved?: boolean;
   interval?: NodeJS.Timeout;
   roundTimeout?: NodeJS.Timeout;
 };
@@ -42,6 +45,10 @@ export class MultiplayerService {
   async joinRoom(code: string, userId: number) {
     const room = await this.prisma.room.findUnique({ where: { code } });
     if (!room) throw new NotFoundException('Room not found');
+    const current = await this.prisma.roomPlayer.findMany({ where: { roomId: room.id } });
+    if (current.length >= 4) {
+      throw new NotFoundException('Room is full');
+    }
     await this.prisma.roomPlayer.upsert({
       where: { roomId_userId: { roomId: room.id, userId } },
       update: {},
@@ -50,9 +57,26 @@ export class MultiplayerService {
     return room;
   }
 
+  async getRoomPlayers(roomId: number) {
+    const players = await this.prisma.roomPlayer.findMany({
+      where: { roomId },
+      include: { user: { include: { profile: true } } },
+      orderBy: { joinedAt: 'asc' },
+    });
+    return players.map((p) => ({
+      userId: p.userId,
+      nickname: p.user.profile?.nickname || `Usuario ${p.userId}`,
+      score: p.score,
+    }));
+  }
+
   async startGame(code: string, io: Server) {
     const room = await this.prisma.room.findUnique({ where: { code } });
     if (!room) throw new NotFoundException('Room not found');
+    const players = await this.prisma.roomPlayer.findMany({ where: { roomId: room.id } });
+    if (players.length < 2 || players.length > 4) {
+      throw new NotFoundException('Room must have between 2 and 4 players');
+    }
     await this.prisma.room.update({ where: { id: room.id }, data: { status: RoomStatus.IN_PROGRESS } });
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.MULTIPLAYER, status: SessionStatus.ACTIVE },
@@ -69,7 +93,7 @@ export class MultiplayerService {
         roundNumber,
         secretPlayerApiId: secret.apiId,
         startAt: new Date(),
-        endAt: new Date(Date.now() + 60 * 1000),
+        endAt: new Date(Date.now() + 10 * 60 * 1000),
       },
     });
 
@@ -77,13 +101,15 @@ export class MultiplayerService {
       roomId,
       sessionId,
       roundNumber,
+      roundId: round.id,
       secretPlayer: secret,
       hintIndex: 0,
+      hintsSent: [],
+      roundResolved: false,
     };
     this.roomStates.set(code, state);
 
     this.scheduleHints(code, io);
-    this.scheduleRoundTimeout(code, io);
     io.to(code).emit('game:start', { roundNumber });
     io.to(code).emit('round:result', { roundId: round.id, started: true });
   }
@@ -92,6 +118,9 @@ export class MultiplayerService {
     const state = this.roomStates.get(code);
     if (!state) {
       return { ok: false, reason: 'not_started' };
+    }
+    if (state.roundResolved) {
+      return { ok: false, reason: 'already_solved' };
     }
     const cooldownKey = `cooldown:${code}:${userId}`;
     const redisClient = this.redis.getClient();
@@ -116,7 +145,7 @@ export class MultiplayerService {
       return { ok: true, correct: false };
     }
 
-    this.clearRoundTimeout(code);
+    state.roundResolved = true;
     await this.prisma.roomPlayer.update({
       where: { roomId_userId: { roomId: state.roomId, userId } },
       data: { score: { increment: 1 } },
@@ -129,7 +158,13 @@ export class MultiplayerService {
     io.to(code).emit('game:score', {
       scores: scores.map((s) => ({ userId: s.userId, score: s.score })),
     });
-    io.to(code).emit('round:result', { winnerUserId: userId, answer: state.secretPlayer.name });
+    io.to(code).emit('round:result', {
+      winnerUserId: userId,
+      answer: state.secretPlayer.name,
+      photoUrl: state.secretPlayer.photoUrl,
+      hints: state.hintsSent,
+      roundNumber: state.roundNumber,
+    });
 
     const winner = scores.find((s) => s.userId === userId);
     if (winner && winner.score >= 5) {
@@ -180,12 +215,12 @@ export class MultiplayerService {
       const hint = hints[state.hintIndex];
       if (!hint) {
         this.clearInterval(code);
-        this.handleRoundExpired(code, io);
         return;
       }
+      state.hintsSent.push(hint);
       io.to(code).emit('round:hint', { step: state.hintIndex + 1, hint });
       state.hintIndex += 1;
-    }, 5000);
+    }, 6000);
   }
 
   private clearInterval(code: string) {
@@ -197,29 +232,11 @@ export class MultiplayerService {
   }
 
   private scheduleRoundTimeout(code: string, io: Server) {
-    this.clearRoundTimeout(code);
-    const state = this.roomStates.get(code);
-    if (!state) return;
-    state.roundTimeout = setTimeout(() => {
-      this.handleRoundExpired(code, io);
-    }, 45000);
+    return;
   }
 
   private clearRoundTimeout(code: string) {
-    const state = this.roomStates.get(code);
-    if (state?.roundTimeout) {
-      clearTimeout(state.roundTimeout);
-      state.roundTimeout = undefined;
-    }
-  }
-
-  private async handleRoundExpired(code: string, io: Server) {
-    const state = this.roomStates.get(code);
-    if (!state) return;
-    this.clearInterval(code);
-    this.clearRoundTimeout(code);
-    io.to(code).emit('round:result', { winnerUserId: null, answer: state.secretPlayer.name });
-    await this.startRound(code, state.roomId, state.sessionId, state.roundNumber + 1, io);
+    return;
   }
 
   private async pickSecretPlayer() {

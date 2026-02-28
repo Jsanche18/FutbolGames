@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { socket } from '@/lib/socket';
 import Panel from '@/components/Panel';
+import PlayerSearch, { SearchPlayer } from '@/components/PlayerSearch';
 
 type Score = { userId: number; score: number };
+type RoomPlayer = { userId: number; nickname: string; score: number };
 
 export default function MultiplayerPage() {
   const [code, setCode] = useState('');
@@ -15,6 +17,11 @@ export default function MultiplayerPage() {
   const [message, setMessage] = useState('');
   const [ready, setReady] = useState(false);
   const [roundActive, setRoundActive] = useState(false);
+  const [screen, setScreen] = useState<'lobby' | 'room'>('lobby');
+  const [players, setPlayers] = useState<RoomPlayer[]>([]);
+  const [answerPhoto, setAnswerPhoto] = useState<string | null>(null);
+  const [answerName, setAnswerName] = useState<string | null>(null);
+  const [answerHints, setAnswerHints] = useState<any[]>([]);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -30,9 +37,16 @@ export default function MultiplayerPage() {
     socket.on('game:score', (data) => {
       setScores(data.scores);
     });
+    socket.on('room:state', (data) => {
+      setPlayers(data.players || []);
+    });
     socket.on('game:start', () => {
       setRoundActive(true);
       setMessage('');
+      setAnswerPhoto(null);
+      setAnswerName(null);
+      setAnswerHints([]);
+      setHints([]);
     });
     socket.on('round:result', (data) => {
       if (data?.started) {
@@ -40,8 +54,11 @@ export default function MultiplayerPage() {
         return;
       }
       setRoundActive(false);
-      if (data?.answer) {
-        setMessage(`Respuesta: ${data.answer}`);
+      setAnswerPhoto(data?.photoUrl || null);
+      setAnswerName(data?.answer || null);
+      setAnswerHints(data?.hints || []);
+      if (data?.winnerUserId) {
+        setMessage(`Ganador de ronda: Usuario ${data.winnerUserId}`);
       }
     });
     socket.on('game:finish', (data) => {
@@ -57,17 +74,24 @@ export default function MultiplayerPage() {
     const res = await socket.emitWithAck('room:create');
     setRoomCode(res.code);
     setHints([]);
+    setScreen('room');
   };
 
   const joinRoom = async () => {
     const res = await socket.emitWithAck('room:join', { code });
     setRoomCode(res.code);
     setHints([]);
+    setScreen('room');
   };
 
   const startGame = async () => {
-    await socket.emitWithAck('game:start', { code: roomCode });
-    setHints([]);
+    try {
+      await socket.emitWithAck('game:start', { code: roomCode });
+      setHints([]);
+      setMessage('');
+    } catch (err: any) {
+      setMessage(err?.message || 'No se pudo iniciar la partida.');
+    }
   };
 
   const sendGuess = async () => {
@@ -81,8 +105,22 @@ export default function MultiplayerPage() {
       setMessage('La ronda no ha empezado todavía.');
       return;
     }
+    if (res?.reason === 'already_solved') {
+      setMessage('La ronda ya fue resuelta.');
+      return;
+    }
     setGuess('');
   };
+
+  const scoreBoard = useMemo(() => {
+    if (players.length === 0) return [];
+    const scoreMap = new Map<number, number>();
+    scores.forEach((s) => scoreMap.set(s.userId, s.score));
+    return players.map((p) => ({
+      ...p,
+      score: scoreMap.get(p.userId) ?? p.score ?? 0,
+    }));
+  }, [players, scores]);
 
   return (
     <main className="min-h-screen bg-pitch px-6 py-12">
@@ -100,7 +138,7 @@ export default function MultiplayerPage() {
           </Panel>
         )}
 
-        {ready && (
+        {ready && screen === 'lobby' && (
           <div className="grid gap-4 md:grid-cols-2">
             <Panel title="Crear sala">
               <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={createRoom}>
@@ -121,30 +159,57 @@ export default function MultiplayerPage() {
           </div>
         )}
 
-        {roomCode && (
+        {roomCode && screen === 'room' && (
           <Panel title={`Sala ${roomCode}`}>
             <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={startGame}>
               Empezar partida
             </button>
 
             <div className="mt-6">
+              <h4 className="text-lg font-display text-clay">Jugadores (2-4)</h4>
+              <ul className="mt-2 space-y-1 text-clay/80">
+                {scoreBoard.map((p) => (
+                  <li key={p.userId}>
+                    {p.nickname}: {p.score}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-6">
               <h4 className="text-lg font-display text-clay">Pistas</h4>
               <ul className="mt-2 space-y-2 text-clay/80">
                 {hints.map((hint, index) => (
                   <li key={index}>
-                    {hint.key}: {hint.value}
+                    {hint.key === 'photoUrl' && hint.value ? (
+                      <span className="flex items-center gap-2">
+                        {hint.key}:
+                        <img src={hint.value} alt="Pista" className="h-12 w-12 rounded-full object-cover" />
+                      </span>
+                    ) : (
+                      <span>
+                        {hint.key}: {hint.value}
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
             </div>
 
             <div className="mt-6 flex gap-2">
-              <input
-                className="flex-1 rounded-lg bg-black/40 px-4 py-2 text-clay"
-                value={guess}
-                onChange={(e) => setGuess(e.target.value)}
-                placeholder="Tu respuesta"
-              />
+              <div className="flex-1">
+                <PlayerSearch
+                  onSelect={(player: SearchPlayer) => {
+                    setGuess(player.name);
+                  }}
+                />
+                <input
+                  className="mt-2 w-full rounded-lg bg-black/40 px-4 py-2 text-clay"
+                  value={guess}
+                  onChange={(e) => setGuess(e.target.value)}
+                  placeholder="Tu respuesta"
+                />
+              </div>
               <button
                 className="rounded-full bg-lime px-6 py-2 text-ink"
                 onClick={sendGuess}
@@ -153,6 +218,29 @@ export default function MultiplayerPage() {
                 Enviar
               </button>
             </div>
+
+            {answerName && (
+              <div className="mt-6 rounded-xl border border-clay/10 bg-black/40 p-4 text-clay/80">
+                <p className="text-sm text-clay/60">Respuesta de la ronda</p>
+                <div className="mt-2 flex items-center gap-3">
+                  {answerPhoto ? (
+                    <img src={answerPhoto} alt={answerName} className="h-16 w-16 rounded-full object-cover" />
+                  ) : (
+                    <div className="h-16 w-16 rounded-full bg-lime/20" />
+                  )}
+                  <div>
+                    <p className="text-lg text-clay">{answerName}</p>
+                    <ul className="mt-1 text-xs text-clay/60">
+                      {answerHints.map((hint, idx) => (
+                        <li key={idx}>
+                          {hint.key}: {hint.value}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {scores.length > 0 && (
               <div className="mt-6">
