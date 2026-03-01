@@ -8,7 +8,8 @@ describe('GamesService', () => {
       },
     } as any;
     const redis = {} as any;
-    const service = new GamesService(prisma, redis);
+    const syncService = {} as any;
+    const service = new GamesService(prisma, redis, syncService);
 
     const result = await service.createLineupTemplate('Test', {});
 

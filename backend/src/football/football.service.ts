@@ -247,6 +247,10 @@ export class FootballService {
         position,
       });
     }
+    items = items.map((item) => ({
+      ...item,
+      name: this.toCanonicalImportantName(item.name, item.teamName),
+    }));
 
     items.sort((a, b) => this.computeImportanceScore(b) - this.computeImportanceScore(a));
 
@@ -320,37 +324,50 @@ export class FootballService {
     return starBonus + rating * 12 + goals * 4 + assists * 3 + minutes / 120;
   }
 
+  private toCanonicalImportantName(name?: string, teamName?: string) {
+    const seed = this.findBestImportantSeed(name, teamName);
+    if (seed) return seed.name;
+    return name || '';
+  }
+
   private isCatalogImportant(name?: string, teamName?: string) {
+    return Boolean(this.findBestImportantSeed(name, teamName));
+  }
+
+  private findBestImportantSeed(name?: string, teamName?: string) {
     const normalized = this.normalizeText(name || '');
-    if (!normalized) return false;
+    if (!normalized) return null;
     const normalizedTeam = this.normalizeText(teamName || '');
 
     if (getImportantPlayersMap().has(normalized)) {
-      if (!normalizedTeam) return true;
+      if (!normalizedTeam) {
+        return IMPORTANT_SEED_ENTRIES.find((seed) => seed.normalizedName === normalized) || null;
+      }
       const seeds = IMPORTANT_SEED_ENTRIES.filter((seed) => seed.normalizedName === normalized);
-      if (seeds.length === 0) return true;
-      return seeds.some((seed) => this.matchesClub(normalizedTeam, seed.normalizedClub));
+      if (seeds.length === 0) return null;
+      return seeds.find((seed) => this.matchesClub(normalizedTeam, seed.normalizedClub)) || null;
     }
 
     let bestScore = -1;
-    let bestClub = '';
+    let bestSeed: (typeof IMPORTANT_SEED_ENTRIES)[number] | null = null;
     for (const seed of IMPORTANT_SEED_ENTRIES) {
       const score = this.scoreImportantNameCandidate(normalized, seed.normalizedName);
       if (score > bestScore) {
         bestScore = score;
-        bestClub = seed.normalizedClub;
+        bestSeed = seed;
       }
     }
 
     if (bestScore < 4) {
-      return false;
+      return null;
     }
 
     if (!normalizedTeam) {
-      return bestScore >= 5;
+      return bestScore >= 5 ? bestSeed : null;
     }
 
-    return this.matchesClub(normalizedTeam, bestClub);
+    if (!bestSeed) return null;
+    return this.matchesClub(normalizedTeam, bestSeed.normalizedClub) ? bestSeed : null;
   }
 
   private matchesQuery(item: any, normalizedQuery: string) {
@@ -437,12 +454,6 @@ export class FootballService {
       );
       if (alreadyPresent) continue;
 
-      const dbItem = await this.findImportantInDb(seed, params);
-      if (dbItem) {
-        mergedByApiId.set(dbItem.apiId, dbItem);
-        continue;
-      }
-
       if (apiCalls >= 8) continue;
       const hydrated = await this.fetchImportantFromApi(seed, params.season);
       apiCalls += 1;
@@ -461,52 +472,6 @@ export class FootballService {
       this.scoreImportantNameCandidate(normalizedName, seedName) >= 5 &&
       (!normalizedClub || this.matchesClub(normalizedClub, seedClub))
     );
-  }
-
-  private async findImportantInDb(
-    seed: { normalizedName: string; normalizedClub: string; name: string },
-    params: {
-      teamApiId?: number;
-      leagueApiId?: number;
-      nationality?: string;
-      position?: string;
-    },
-  ) {
-    const firstToken = seed.normalizedName.split(' ')[0] || seed.normalizedName;
-    const dbPlayers = await this.prisma.player.findMany({
-      where: {
-        ...(firstToken ? { name: { contains: firstToken, mode: 'insensitive' } } : {}),
-      },
-      include: { team: true, stats: true },
-      take: 30,
-    });
-    const mapped = dbPlayers
-      .map((player) => {
-        const bestStat = (player.stats || []).reduce((acc, curr) => {
-          const accMinutes = Number(acc?.minutes || 0) || 0;
-          const currMinutes = Number(curr?.minutes || 0) || 0;
-          return currMinutes > accMinutes ? curr : acc;
-        }, null as any);
-        return {
-          apiId: player.apiId,
-          name: this.buildPlayerName(player.name, player.firstname ?? undefined, player.lastname ?? undefined),
-          photoUrl: player.photoUrl ?? undefined,
-          nationality: player.nationality ?? undefined,
-          teamApiId: player.teamApiId ?? undefined,
-          leagueApiId: player.leagueApiId ?? undefined,
-          teamName: player.team?.name ?? undefined,
-          primaryPosition: player.position ?? undefined,
-          allowedPositions: mapAllowedPositions(player.position),
-          goals: Number(bestStat?.goals || 0) || 0,
-          assists: Number(bestStat?.assists || 0) || 0,
-          minutes: Number(bestStat?.minutes || 0) || 0,
-          rating: Number(bestStat?.rating || 0) || 0,
-        };
-      })
-      .filter((item) => this.isSameImportantSeed(item, seed.normalizedName, seed.normalizedClub))
-      .filter((item) => this.applyPlayerFilters(item, params));
-
-    return mapped[0] || null;
   }
 
   private async fetchImportantFromApi(

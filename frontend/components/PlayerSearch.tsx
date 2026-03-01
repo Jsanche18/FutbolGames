@@ -27,29 +27,37 @@ export default function PlayerSearch({ onSelect, leagueApiId }: Props) {
   const [importantOnly, setImportantOnly] = useState(false);
   const [teams, setTeams] = useState<{ apiId: number; name: string }[]>([]);
   const timer = useRef<NodeJS.Timeout | null>(null);
-  const season = Number(process.env.NEXT_PUBLIC_DEFAULT_SEASON || 2024);
+  const requestSeq = useRef(0);
+  const season = Number(process.env.NEXT_PUBLIC_DEFAULT_SEASON || 2025);
 
   const search = async (value: string) => {
+    const currentRequest = ++requestSeq.current;
     const normalizedValue = value.trim();
     if (!importantOnly && (!normalizedValue || normalizedValue.length < 2)) {
       setResults([]);
       return;
     }
-    const res = await api.get('/players/search', {
-      params: {
-        ...(normalizedValue ? { q: normalizedValue } : {}),
-        season,
-        ...(leagueApiId ? { leagueApiId } : {}),
-        ...(teamApiId ? { teamApiId: Number(teamApiId) } : {}),
-        ...(nationality ? { nationality } : {}),
-        ...(position ? { position } : {}),
-        ...(importantOnly ? { importantOnly: true } : {}),
-      },
-    });
-    const items = res.data?.items || [];
-    setResults(items.slice(0, 15));
-    setActiveIndex(0);
-    setOpen(true);
+    try {
+      const res = await api.get('/players/search', {
+        params: {
+          ...(normalizedValue ? { q: normalizedValue } : {}),
+          season,
+          ...(leagueApiId ? { leagueApiId } : {}),
+          ...(teamApiId ? { teamApiId: Number(teamApiId) } : {}),
+          ...(nationality ? { nationality } : {}),
+          ...(position ? { position } : {}),
+          ...(importantOnly ? { importantOnly: true } : {}),
+        },
+      });
+      if (currentRequest !== requestSeq.current) return;
+      const items = res.data?.items || [];
+      setResults(items.slice(0, 15));
+      setActiveIndex(0);
+      setOpen(items.length > 0);
+    } catch {
+      if (currentRequest !== requestSeq.current) return;
+      setResults([]);
+    }
   };
 
   useEffect(() => {

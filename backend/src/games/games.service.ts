@@ -5,6 +5,7 @@ import { GameType, SessionStatus } from '@prisma/client';
 import { LineupRulesSchema } from './lineup.rules';
 import { SyncService } from '../sync/sync.service';
 import {
+  IMPORTANT_PLAYERS_CATALOG,
   getImportantPlayersMap,
   normalizeImportantName,
 } from '../common/important-players.catalog';
@@ -12,6 +13,11 @@ import {
 const HANGMAN_TTL = 60 * 15;
 const SORT_TTL = 60 * 15;
 const MARKET_TTL = 60 * 15;
+const IMPORTANT_SEED_ENTRIES = IMPORTANT_PLAYERS_CATALOG.map((entry) => ({
+  ...entry,
+  normalizedName: normalizeImportantName(entry.name),
+  normalizedClub: normalizeImportantName(entry.club),
+}));
 
 @Injectable()
 export class GamesService {
@@ -132,7 +138,7 @@ export class GamesService {
         ...(teamApiId ? { teamApiId } : {}),
         ...(leagueApiId ? { leagueApiId } : {}),
       },
-      include: { stats: true },
+      include: { stats: true, team: true },
       take: 600,
     });
     const filtered =
@@ -226,7 +232,7 @@ export class GamesService {
         ...(stat === 'assists' ? { assists: { gt: 0 } } : {}),
         ...(stat === 'appearances' ? { appearances: { gt: 0 } } : {}),
       },
-      include: { player: true },
+      include: { player: { include: { team: true } } },
       take: 800,
     });
     const filteredStats =
@@ -313,14 +319,13 @@ export class GamesService {
 
     const candidates = players
       .map((player) => {
-        const key = normalizeImportantName(
-          `${player.firstname || ''} ${player.lastname || ''}`.trim() || player.name,
-        );
-        const market = importantMap.get(key);
+        const seed = this.findImportantSeedForPlayer(player);
+        const key = seed?.normalizedName;
+        const market = key ? importantMap.get(key) : undefined;
         return {
           player,
           marketValueM: market?.marketValueM,
-          seedClub: market?.club,
+          seedClub: market?.club || seed?.club,
         };
       })
       .filter((row) => {
@@ -421,22 +426,7 @@ export class GamesService {
 
   private isImportantPlayer(player: any, stats: any[]) {
     if (!player) return false;
-    const fullName = this.normalizeText(
-      `${player.firstname || ''} ${player.lastname || ''}`.trim() || player.name || '',
-    );
-    if (this.getFeaturedPlayerNames().has(fullName)) {
-      return true;
-    }
-    const best = (stats || []).reduce(
-      (acc, curr) => {
-        const accScore = this.computeStatImportance(acc);
-        const currScore = this.computeStatImportance(curr);
-        return currScore > accScore ? curr : acc;
-      },
-      {} as any,
-    );
-    const score = this.computeStatImportance(best);
-    return score >= 25;
+    return Boolean(this.findImportantSeedForPlayer(player));
   }
 
   private computeStatImportance(stat: any) {
@@ -485,5 +475,43 @@ export class GamesService {
       return;
     }
     await this.syncService.enqueueBootstrap();
+  }
+
+  private findImportantSeedForPlayer(player: any) {
+    const fullName = this.normalizeText(
+      `${player?.firstname || ''} ${player?.lastname || ''}`.trim() || player?.name || '',
+    );
+    const teamName = this.normalizeText(player?.team?.name || '');
+    if (!fullName) return null;
+
+    let best: (typeof IMPORTANT_SEED_ENTRIES)[number] | null = null;
+    let bestScore = -1;
+    for (const seed of IMPORTANT_SEED_ENTRIES) {
+      const score = this.scoreImportantNameCandidate(fullName, seed.normalizedName);
+      if (score < 5) continue;
+      if (teamName && !this.matchesClub(teamName, seed.normalizedClub)) continue;
+      if (score > bestScore) {
+        best = seed;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  private scoreImportantNameCandidate(normalizedName: string, normalizedSeedName: string) {
+    if (!normalizedName || !normalizedSeedName) return 0;
+    if (normalizedName === normalizedSeedName) return 6;
+    if (normalizedName.startsWith(`${normalizedSeedName} `)) return 5;
+    if (normalizedSeedName.startsWith(`${normalizedName} `)) return 2;
+    return 0;
+  }
+
+  private matchesClub(normalizedTeamName: string, normalizedSeedClub: string) {
+    if (!normalizedTeamName || !normalizedSeedClub) return false;
+    return (
+      normalizedTeamName === normalizedSeedClub ||
+      normalizedTeamName.includes(normalizedSeedClub) ||
+      normalizedSeedClub.includes(normalizedTeamName)
+    );
   }
 }

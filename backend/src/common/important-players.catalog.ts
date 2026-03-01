@@ -168,6 +168,7 @@ export const IMPORTANT_PLAYERS_CATALOG: ImportantPlayerSeed[] = [
   { name: 'Guillermo Maripan', club: 'Real Sociedad', marketValueM: 30 },
   { name: 'Nabil Fekir', club: 'Real Betis', marketValueM: 30 },
   { name: 'Andriy Lunin', club: 'Real Madrid', marketValueM: 30 },
+  { name: 'Thibaut Courtois', club: 'Real Madrid', marketValueM: 25 },
   { name: 'Marc Bartra', club: 'Real Betis', marketValueM: 28 },
   { name: 'Angel Correa', club: 'Atletico Madrid', marketValueM: 28 },
   { name: 'Brais Mendez', club: 'Celta de Vigo', marketValueM: 25 },
