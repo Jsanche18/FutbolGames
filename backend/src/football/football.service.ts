@@ -5,6 +5,7 @@ import { ApiFootballClient } from './api-football.client';
 import { ApiFootballTrophyProvider } from './trophy.provider';
 import { mapAllowedPositions } from './positions';
 import { ConfigService } from '@nestjs/config';
+import { getImportantPlayersMap } from '../common/important-players.catalog';
 
 const CACHE_TTL = 60 * 60;
 
@@ -305,23 +306,6 @@ export class FootballService {
 
   private isStarByName(name?: string) {
     const normalized = this.normalizeText(name || '');
-    const stars = new Set([
-      'kylian mbappe',
-      'thibaut courtois',
-      'erling haaland',
-      'vinicius junior',
-      'jude bellingham',
-      'kevin de bruyne',
-      'harry kane',
-      'mohamed salah',
-      'rodri',
-      'lautaro martinez',
-      'robert lewandowski',
-      'pedri',
-      'bukayo saka',
-      'jamal musiala',
-      'florian wirtz',
-    ]);
-    return stars.has(normalized);
+    return getImportantPlayersMap().has(normalized);
   }
 }
