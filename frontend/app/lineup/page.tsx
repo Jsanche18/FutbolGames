@@ -13,9 +13,23 @@ type Slot = {
   player?: SearchPlayer | null;
 };
 
+const TOP_LEAGUES = [
+  { label: 'Todas las ligas', value: '' },
+  { label: 'España - La Liga', value: '140' },
+  { label: 'Francia - Ligue 1', value: '61' },
+  { label: 'Arabia Saudita - Pro League', value: '307' },
+  { label: 'EE.UU. - MLS', value: '253' },
+  { label: 'Argentina - Liga Profesional', value: '128' },
+  { label: 'Brasil - Serie A', value: '71' },
+  { label: 'Inglaterra - Premier League', value: '39' },
+  { label: 'Alemania - Bundesliga', value: '78' },
+  { label: 'Italia - Serie A', value: '135' },
+];
+
 export default function LineupPage() {
   const [formation, setFormation] = useState<'433' | '442'>('433');
   const [selectedPlayer, setSelectedPlayer] = useState<SearchPlayer | null>(null);
+  const [selectedLeague, setSelectedLeague] = useState<string>('');
   const [slots, setSlots] = useState<Slot[]>([]);
   const [templateId, setTemplateId] = useState<number | null>(null);
   const [message, setMessage] = useState('');
@@ -151,7 +165,24 @@ export default function LineupPage() {
         <Panel title="Buscar jugador">
           <SelectedPlayerBanner player={selectedPlayer} onClear={() => setSelectedPlayer(null)} />
           <div className="mt-4">
-            <PlayerSearch onSelect={setSelectedPlayer} />
+            <label className="mb-2 block text-sm text-clay/70">Liga</label>
+            <select
+              className="w-full rounded-lg bg-black/50 px-4 py-3 text-clay outline-none"
+              value={selectedLeague}
+              onChange={(e) => setSelectedLeague(e.target.value)}
+            >
+              {TOP_LEAGUES.map((league) => (
+                <option key={league.label} value={league.value}>
+                  {league.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="mt-4">
+            <PlayerSearch
+              onSelect={setSelectedPlayer}
+              leagueApiId={selectedLeague ? Number(selectedLeague) : undefined}
+            />
           </div>
           <div className="mt-4 flex gap-3">
             <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={submit}>

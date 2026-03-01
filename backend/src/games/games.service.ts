@@ -225,6 +225,9 @@ export class GamesService {
     const payload = {
       stat,
       order: order.map((s) => s.player.apiId),
+      values: Object.fromEntries(
+        shuffled.map((s) => [String(s.player.apiId), Number((s as any)[stat]) || 0]),
+      ),
     };
     await this.redis.setJson(`sort:${session.id}`, payload, SORT_TTL);
     return {
@@ -244,7 +247,30 @@ export class GamesService {
     const state = await this.redis.getJson<any>(key);
     if (!state) throw new NotFoundException('Session not found');
     const correctOrder = state.order as number[];
-    const isCorrect = orderedPlayerApiIds.join(',') === correctOrder.join(',');
+    const statValues = (state.values || {}) as Record<string, number>;
+
+    let isCorrect = orderedPlayerApiIds.join(',') === correctOrder.join(',');
+    if (Object.keys(statValues).length > 0) {
+      const expected = new Set(correctOrder);
+      const submitted = new Set(orderedPlayerApiIds);
+      const hasExpectedLength = orderedPlayerApiIds.length === correctOrder.length;
+      const hasNoDuplicates = submitted.size === orderedPlayerApiIds.length;
+      const hasSamePlayers = hasExpectedLength && hasNoDuplicates && [...submitted].every((id) => expected.has(id));
+
+      if (hasSamePlayers) {
+        isCorrect = true;
+        for (let i = 1; i < orderedPlayerApiIds.length; i++) {
+          const prev = statValues[String(orderedPlayerApiIds[i - 1])] ?? Number.NEGATIVE_INFINITY;
+          const curr = statValues[String(orderedPlayerApiIds[i])] ?? Number.NEGATIVE_INFINITY;
+          if (prev < curr) {
+            isCorrect = false;
+            break;
+          }
+        }
+      } else {
+        isCorrect = false;
+      }
+    }
 
     await this.prisma.gameSession.update({
       where: { id: sessionId },

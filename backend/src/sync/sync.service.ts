@@ -229,7 +229,7 @@ export class SyncService implements OnModuleInit {
         season: item.seasons?.[0]?.year || resolvedSeason,
         countryCode: item.country?.code,
       }))
-      .filter((l: any) => l.apiId && this.matchesLeague(l.name, allowed));
+      .filter((l: any) => l.apiId && this.matchesLeague(l.name, l.country, allowed));
 
     if (selected.length > 0) {
       await this.prisma.league.createMany({
@@ -264,13 +264,34 @@ export class SyncService implements OnModuleInit {
         .map((value) => value.trim())
         .filter(Boolean);
     }
-    return ['La Liga', 'Premier League', 'Serie A', 'Bundesliga', 'Ligue 1', 'Major League Soccer', 'MLS'];
+    return [
+      'Spain|La Liga',
+      'France|Ligue 1',
+      'Saudi-Arabia|Pro League',
+      'USA|Major League Soccer',
+      'Argentina|Liga Profesional Argentina',
+      'Brazil|Serie A',
+      'England|Premier League',
+      'Germany|Bundesliga',
+      'Italy|Serie A',
+      'MLS',
+    ];
   }
 
-  private matchesLeague(name: string | undefined, allowed: string[]) {
+  private matchesLeague(name: string | undefined, country: string | undefined, allowed: string[]) {
     if (!name) return false;
-    const normalized = name.toLowerCase();
-    return allowed.some((candidate) => normalized === candidate.toLowerCase());
+    const normalizedName = name.toLowerCase();
+    const normalizedCountry = (country || '').toLowerCase();
+    return allowed.some((candidate) => {
+      const parts = candidate.split('|').map((value) => value.trim());
+      if (parts.length === 2) {
+        return (
+          normalizedCountry === parts[0].toLowerCase() &&
+          normalizedName === parts[1].toLowerCase()
+        );
+      }
+      return normalizedName === candidate.toLowerCase();
+    });
   }
 
   private async throttle() {

@@ -13,9 +13,10 @@ export type SearchPlayer = {
 
 type Props = {
   onSelect: (player: SearchPlayer) => void;
+  leagueApiId?: number;
 };
 
-export default function PlayerSearch({ onSelect }: Props) {
+export default function PlayerSearch({ onSelect, leagueApiId }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchPlayer[]>([]);
   const [open, setOpen] = useState(false);
@@ -28,7 +29,9 @@ export default function PlayerSearch({ onSelect }: Props) {
       setResults([]);
       return;
     }
-    const res = await api.get('/players/search', { params: { q: value, season } });
+    const res = await api.get('/players/search', {
+      params: { q: value, season, ...(leagueApiId ? { leagueApiId } : {}) },
+    });
     const items = res.data?.items || [];
     setResults(items.slice(0, 10));
     setActiveIndex(0);
@@ -43,7 +46,7 @@ export default function PlayerSearch({ onSelect }: Props) {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [query]);
+  }, [query, leagueApiId]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!open || results.length === 0) return;
