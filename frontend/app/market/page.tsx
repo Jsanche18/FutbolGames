@@ -19,7 +19,6 @@ const TOP_LEAGUES = [
 
 export default function MarketGamePage() {
   const [leagueApiId, setLeagueApiId] = useState('');
-  const [pool, setPool] = useState<'important' | 'all'>('important');
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [player, setPlayer] = useState<any>(null);
   const [guess, setGuess] = useState('');
@@ -27,7 +26,7 @@ export default function MarketGamePage() {
 
   const start = async () => {
     const res = await api.post('/games/market/start', {
-      pool,
+      pool: 'important',
       ...(leagueApiId ? { leagueApiId: Number(leagueApiId) } : {}),
     });
     setSessionId(res.data.sessionId);
@@ -64,14 +63,6 @@ export default function MarketGamePage() {
                   {league.label}
                 </option>
               ))}
-            </select>
-            <select
-              className="rounded-lg bg-black/40 px-4 py-2 text-clay"
-              value={pool}
-              onChange={(e) => setPool(e.target.value as 'important' | 'all')}
-            >
-              <option value="important">Solo importantes</option>
-              <option value="all">Todos</option>
             </select>
             <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={start}>
               Nueva ronda

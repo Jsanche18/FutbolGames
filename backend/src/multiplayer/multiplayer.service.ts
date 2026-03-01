@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { GameType, RoomStatus, SessionStatus } from '@prisma/client';
@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 
 type RoomState = {
   roomId: number;
+  hostUserId: number;
   sessionId: number;
   roundNumber: number;
   roundId?: number;
@@ -59,22 +60,30 @@ export class MultiplayerService {
   }
 
   async getRoomPlayers(roomId: number) {
+    const hostUserId = await this.getHostUserId(roomId);
     const players = await this.prisma.roomPlayer.findMany({
       where: { roomId },
       include: { user: { include: { profile: true } } },
       orderBy: { joinedAt: 'asc' },
     });
-    return players.map((p) => ({
-      userId: p.userId,
-      nickname: p.user.profile?.nickname || `Usuario ${p.userId}`,
-      score: p.score,
-    }));
+    return {
+      hostUserId,
+      players: players.map((p) => ({
+        userId: p.userId,
+        nickname: p.user.profile?.nickname || `Usuario ${p.userId}`,
+        score: p.score,
+      })),
+    };
   }
 
-  async startGame(code: string, io: Server) {
+  async startGame(code: string, requestedByUserId: number, io: Server) {
     const room = await this.prisma.room.findUnique({ where: { code } });
     if (!room) throw new NotFoundException('Room not found');
     const players = await this.prisma.roomPlayer.findMany({ where: { roomId: room.id } });
+    const hostUserId = await this.getHostUserId(room.id);
+    if (!hostUserId || requestedByUserId !== hostUserId) {
+      throw new ForbiddenException('Only the host can start the match');
+    }
     if (players.length < 2 || players.length > 4) {
       throw new NotFoundException('Room must have between 2 and 4 players');
     }
@@ -85,11 +94,18 @@ export class MultiplayerService {
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.MULTIPLAYER, status: SessionStatus.ACTIVE },
     });
-    await this.startRound(room.code, room.id, session.id, 1, io);
+    await this.startRound(room.code, room.id, hostUserId, session.id, 1, io);
     return { room, sessionId: session.id };
   }
 
-  async startRound(code: string, roomId: number, sessionId: number, roundNumber: number, io: Server) {
+  async startRound(
+    code: string,
+    roomId: number,
+    hostUserId: number,
+    sessionId: number,
+    roundNumber: number,
+    io: Server,
+  ) {
     const secret = await this.pickSecretPlayer();
     const round = await this.prisma.gameRound.create({
       data: {
@@ -103,6 +119,7 @@ export class MultiplayerService {
 
     const state: RoomState = {
       roomId,
+      hostUserId,
       sessionId,
       roundNumber,
       roundId: round.id,
@@ -160,13 +177,19 @@ export class MultiplayerService {
 
     const scores = await this.prisma.roomPlayer.findMany({
       where: { roomId: state.roomId },
-      include: { user: true },
+      include: { user: { include: { profile: true } } },
     });
     io.to(code).emit('game:score', {
-      scores: scores.map((s) => ({ userId: s.userId, score: s.score })),
+      scores: scores.map((s) => ({
+        userId: s.userId,
+        score: s.score,
+        nickname: s.user.profile?.nickname || `Usuario ${s.userId}`,
+      })),
     });
+    const winnerProfile = scores.find((s) => s.userId === userId)?.user?.profile?.nickname;
     io.to(code).emit('round:result', {
       winnerUserId: userId,
+      winnerNickname: winnerProfile || `Usuario ${userId}`,
       answer: state.secretPlayer.name,
       photoUrl: state.secretPlayer.photoUrl,
       hints: state.hintsSent,
@@ -183,13 +206,16 @@ export class MultiplayerService {
     return { ok: true, correct: true };
   }
 
-  async nextRound(code: string, io: Server) {
+  async nextRound(code: string, requestedByUserId: number, io: Server) {
     const state = this.roomStates.get(code);
     if (!state) throw new NotFoundException('Round not started');
+    if (requestedByUserId !== state.hostUserId) {
+      throw new ForbiddenException('Only the host can start the next round');
+    }
     if (!state.awaitingNextRound) {
       return { ok: false, reason: 'not_ready' };
     }
-    await this.startRound(code, state.roomId, state.sessionId, state.roundNumber + 1, io);
+    await this.startRound(code, state.roomId, state.hostUserId, state.sessionId, state.roundNumber + 1, io);
     return { ok: true };
   }
 
@@ -225,7 +251,9 @@ export class MultiplayerService {
       { key: 'nationality', value: state.secretPlayer.nationality },
       { key: 'league', value: state.secretPlayer.leagueName },
       { key: 'team', value: state.secretPlayer.teamName },
+      { key: 'position', value: state.secretPlayer.position },
       { key: 'photoUrl', value: state.secretPlayer.photoUrl },
+      { key: 'name', value: state.secretPlayer.name },
     ];
 
     state.interval = setInterval(() => {
@@ -237,7 +265,7 @@ export class MultiplayerService {
       state.hintsSent.push(hint);
       io.to(code).emit('round:hint', { step: state.hintIndex + 1, hint });
       state.hintIndex += 1;
-    }, 6000);
+    }, 10000);
   }
 
   private clearInterval(code: string) {
@@ -276,6 +304,15 @@ export class MultiplayerService {
       teamName: team?.name,
       leagueName: league?.name,
     };
+  }
+
+  private async getHostUserId(roomId: number) {
+    const host = await this.prisma.roomPlayer.findFirst({
+      where: { roomId },
+      orderBy: { joinedAt: 'asc' },
+      select: { userId: true },
+    });
+    return host?.userId || null;
   }
 
   private maskName(name: string) {

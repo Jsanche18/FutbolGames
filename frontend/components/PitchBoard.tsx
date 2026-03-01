@@ -21,39 +21,10 @@ type SlotAssignment = {
 };
 
 type Props = {
-  formation: '433' | '442';
+  layout: Slot[];
   selectedPlayer: Player | null;
   slots: SlotAssignment[];
   onSlotClick: (slot: SlotAssignment) => void;
-};
-
-const formations: Record<'433' | '442', Slot[]> = {
-  '433': [
-    { id: 'gk', position: 'GK', x: 50, y: 88 },
-    { id: 'lb', position: 'LB', x: 15, y: 70 },
-    { id: 'cb1', position: 'CB', x: 38, y: 70 },
-    { id: 'cb2', position: 'CB', x: 62, y: 70 },
-    { id: 'rb', position: 'RB', x: 85, y: 70 },
-    { id: 'cm1', position: 'CM', x: 25, y: 48 },
-    { id: 'cm2', position: 'CM', x: 50, y: 48 },
-    { id: 'cm3', position: 'CM', x: 75, y: 48 },
-    { id: 'lw', position: 'LW', x: 25, y: 20 },
-    { id: 'st', position: 'ST', x: 50, y: 20 },
-    { id: 'rw', position: 'RW', x: 75, y: 20 },
-  ],
-  '442': [
-    { id: 'gk', position: 'GK', x: 50, y: 88 },
-    { id: 'lb', position: 'LB', x: 15, y: 70 },
-    { id: 'cb1', position: 'CB', x: 38, y: 70 },
-    { id: 'cb2', position: 'CB', x: 62, y: 70 },
-    { id: 'rb', position: 'RB', x: 85, y: 70 },
-    { id: 'lm', position: 'LM', x: 15, y: 48 },
-    { id: 'cm1', position: 'CM', x: 38, y: 48 },
-    { id: 'cm2', position: 'CM', x: 62, y: 48 },
-    { id: 'rm', position: 'RM', x: 85, y: 48 },
-    { id: 'st1', position: 'ST', x: 35, y: 20 },
-    { id: 'st2', position: 'ST', x: 65, y: 20 },
-  ],
 };
 
 function initials(name: string) {
@@ -61,9 +32,7 @@ function initials(name: string) {
   return parts.slice(0, 2).map((p) => p[0]).join('').toUpperCase();
 }
 
-export default function PitchBoard({ formation, selectedPlayer, slots, onSlotClick }: Props) {
-  const layout = formations[formation];
-
+export default function PitchBoard({ layout, selectedPlayer, slots, onSlotClick }: Props) {
   const slotMap = useMemo(() => {
     const map = new Map<string, SlotAssignment>();
     slots.forEach((slot) => map.set(slot.slotId, slot));

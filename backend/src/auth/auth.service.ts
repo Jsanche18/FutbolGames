@@ -13,10 +13,21 @@ export class AuthService {
     private configService: ConfigService,
   ) {}
 
-  async register(email: string, password: string) {
+  async register(email: string, password: string, nickname: string) {
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
       throw new BadRequestException('Email already in use');
+    }
+    const normalizedNickname = String(nickname || '').trim();
+    if (normalizedNickname.length < 3) {
+      throw new BadRequestException('Nickname must contain at least 3 characters');
+    }
+    const existingNickname = await this.prisma.profile.findFirst({
+      where: { nickname: { equals: normalizedNickname, mode: 'insensitive' } },
+      select: { userId: true },
+    });
+    if (existingNickname) {
+      throw new BadRequestException('Nickname already in use');
     }
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await this.prisma.user.create({
@@ -25,7 +36,7 @@ export class AuthService {
         passwordHash,
         profile: {
           create: {
-            nickname: email.split('@')[0],
+            nickname: normalizedNickname,
           },
         },
       },

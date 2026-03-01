@@ -26,6 +26,9 @@ export default function TopNav() {
           <Link href="/sort" className="text-clay/80 hover:text-lime">
             Sort
           </Link>
+          <Link href="/market" className="text-clay/80 hover:text-lime">
+            Market Value
+          </Link>
           <Link href="/multiplayer" className="text-clay/80 hover:text-lime">
             Multiplayer
           </Link>

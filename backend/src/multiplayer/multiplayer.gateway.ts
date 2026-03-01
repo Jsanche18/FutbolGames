@@ -85,8 +85,8 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
   async onCreateRoom(@ConnectedSocket() client: SocketWithUser) {
     const room = await this.multiplayerService.createRoom(client.userId!);
     client.join(room.code);
-    const players = await this.multiplayerService.getRoomPlayers(room.id);
-    this.server.to(room.code).emit('room:state', { code: room.code, players });
+    const state = await this.multiplayerService.getRoomPlayers(room.id);
+    this.server.to(room.code).emit('room:state', { code: room.code, ...state });
     return { code: room.code };
   }
 
@@ -94,19 +94,19 @@ export class MultiplayerGateway implements OnGatewayInit, OnGatewayConnection, O
   async onJoinRoom(@ConnectedSocket() client: SocketWithUser, @MessageBody() data: { code: string }) {
     const room = await this.multiplayerService.joinRoom(data.code, client.userId!);
     client.join(room.code);
-    const players = await this.multiplayerService.getRoomPlayers(room.id);
-    this.server.to(room.code).emit('room:state', { code: room.code, players });
+    const state = await this.multiplayerService.getRoomPlayers(room.id);
+    this.server.to(room.code).emit('room:state', { code: room.code, ...state });
     return { code: room.code };
   }
 
   @SubscribeMessage('game:start')
-  async onGameStart(@MessageBody() data: { code: string }) {
-    return this.multiplayerService.startGame(data.code, this.server);
+  async onGameStart(@ConnectedSocket() client: SocketWithUser, @MessageBody() data: { code: string }) {
+    return this.multiplayerService.startGame(data.code, client.userId!, this.server);
   }
 
   @SubscribeMessage('round:next')
-  async onNextRound(@MessageBody() data: { code: string }) {
-    return this.multiplayerService.nextRound(data.code, this.server);
+  async onNextRound(@ConnectedSocket() client: SocketWithUser, @MessageBody() data: { code: string }) {
+    return this.multiplayerService.nextRound(data.code, client.userId!, this.server);
   }
 
   @SubscribeMessage('round:answer')

@@ -5,13 +5,14 @@ import { api, setAuthToken } from '@/lib/api';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
+  const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
   const [message, setMessage] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await api.post('/auth/register', { email, password });
+      const res = await api.post('/auth/register', { email, password, nickname });
       const token = res.data.accessToken;
       const refresh = res.data.refreshToken;
       localStorage.setItem('token', token);
@@ -33,6 +34,12 @@ export default function RegisterPage() {
             placeholder="Email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+          />
+          <input
+            className="w-full rounded-lg bg-black/40 px-4 py-3 text-clay outline-none"
+            placeholder="Nickname"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
           />
           <input
             className="w-full rounded-lg bg-black/40 px-4 py-3 text-clay outline-none"

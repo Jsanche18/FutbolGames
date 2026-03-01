@@ -5,13 +5,29 @@ import { socket } from '@/lib/socket';
 import Panel from '@/components/Panel';
 import PlayerSearch, { SearchPlayer } from '@/components/PlayerSearch';
 
-type Score = { userId: number; score: number };
+type Score = { userId: number; score: number; nickname?: string };
 type RoomPlayer = { userId: number; nickname: string; score: number };
+type Hint = { key: string; value: any };
+
+function parseUserIdFromToken(token: string | null) {
+  if (!token) return null;
+  try {
+    const payloadPart = token.split('.')[1];
+    if (!payloadPart) return null;
+    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const parsed = JSON.parse(atob(padded));
+    const value = Number(parsed?.sub);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function MultiplayerPage() {
   const [code, setCode] = useState('');
   const [roomCode, setRoomCode] = useState('');
-  const [hints, setHints] = useState<any[]>([]);
+  const [hints, setHints] = useState<Hint[]>([]);
   const [guess, setGuess] = useState('');
   const [scores, setScores] = useState<Score[]>([]);
   const [message, setMessage] = useState('');
@@ -19,9 +35,11 @@ export default function MultiplayerPage() {
   const [roundActive, setRoundActive] = useState(false);
   const [screen, setScreen] = useState<'lobby' | 'room'>('lobby');
   const [players, setPlayers] = useState<RoomPlayer[]>([]);
+  const [hostUserId, setHostUserId] = useState<number | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [answerPhoto, setAnswerPhoto] = useState<string | null>(null);
   const [answerName, setAnswerName] = useState<string | null>(null);
-  const [answerHints, setAnswerHints] = useState<any[]>([]);
+  const [answerHints, setAnswerHints] = useState<Hint[]>([]);
   const [currentRound, setCurrentRound] = useState<number>(1);
   const [gameStarted, setGameStarted] = useState(false);
   const [awaitingNextRound, setAwaitingNextRound] = useState(false);
@@ -32,6 +50,7 @@ export default function MultiplayerPage() {
       socket.auth = { token };
       socket.connect();
       setReady(true);
+      setCurrentUserId(parseUserIdFromToken(token));
     }
 
     socket.on('round:hint', (data) => {
@@ -42,6 +61,7 @@ export default function MultiplayerPage() {
     });
     socket.on('room:state', (data) => {
       setPlayers(data.players || []);
+      setHostUserId(Number(data.hostUserId || 0) || null);
     });
     socket.on('game:start', () => {
       setRoundActive(true);
@@ -67,11 +87,14 @@ export default function MultiplayerPage() {
       setAwaitingNextRound(!!data?.awaitingNextRound);
       if (data?.roundNumber) setCurrentRound(data.roundNumber);
       if (data?.winnerUserId) {
-        setMessage(`Ganador de ronda: Usuario ${data.winnerUserId}`);
+        const winnerLabel = data?.winnerNickname || `Usuario ${data.winnerUserId}`;
+        setMessage(`Ganador de ronda: ${winnerLabel}`);
       }
     });
     socket.on('game:finish', (data) => {
-      setMessage(`Ganador: ${data.winnerUserId}`);
+      const winner = players.find((player) => player.userId === data.winnerUserId);
+      const winnerLabel = winner?.nickname || `Usuario ${data.winnerUserId}`;
+      setMessage(`Ganador: ${winnerLabel}`);
       setGameStarted(false);
       setAwaitingNextRound(false);
       setRoundActive(false);
@@ -122,6 +145,8 @@ export default function MultiplayerPage() {
       setMessage(err?.message || 'No se pudo iniciar la siguiente ronda.');
     }
   };
+
+  const isHost = currentUserId !== null && hostUserId !== null && currentUserId === hostUserId;
 
   const sendGuess = async () => {
     if (!roomCode) return;
@@ -197,12 +222,16 @@ export default function MultiplayerPage() {
               <button
                 className="rounded-full bg-lime px-6 py-2 text-ink"
                 onClick={startGame}
-                disabled={gameStarted || roundActive}
+                disabled={gameStarted || roundActive || !isHost}
               >
-                Empezar partida
+                {isHost ? 'Empezar partida' : 'Solo host puede empezar'}
               </button>
               {awaitingNextRound && (
-                <button className="rounded-full border border-clay/30 px-6 py-2 text-clay" onClick={nextRound}>
+                <button
+                  className="rounded-full border border-clay/30 px-6 py-2 text-clay"
+                  onClick={nextRound}
+                  disabled={!isHost}
+                >
                   Siguiente ronda
                 </button>
               )}
@@ -210,6 +239,9 @@ export default function MultiplayerPage() {
 
             <div className="mt-6">
               <h4 className="text-lg font-display text-clay">Jugadores (2-4)</h4>
+              <p className="text-xs text-clay/60">
+                Host: {players.find((player) => player.userId === hostUserId)?.nickname || 'Sin definir'}
+              </p>
               <ul className="mt-2 space-y-1 text-clay/80">
                 {scoreBoard.map((p) => (
                   <li key={p.userId}>
@@ -226,9 +258,11 @@ export default function MultiplayerPage() {
                   <li key={index}>
                     {hint.key === 'photoUrl' && hint.value ? (
                       <span className="flex items-center gap-2">
-                        {hint.key}:
+                        foto:
                         <img src={hint.value} alt="Pista" className="h-12 w-12 rounded-full object-cover" />
                       </span>
+                    ) : hint.key === 'name' ? (
+                      <span>nombre: {hint.value}</span>
                     ) : (
                       <span>
                         {hint.key}: {hint.value}
@@ -276,7 +310,7 @@ export default function MultiplayerPage() {
                     <ul className="mt-1 text-xs text-clay/60">
                       {answerHints.map((hint, idx) => (
                         <li key={idx}>
-                          {hint.key}: {hint.value}
+                          {hint.key === 'photoUrl' ? 'foto revelada' : `${hint.key}: ${hint.value}`}
                         </li>
                       ))}
                     </ul>

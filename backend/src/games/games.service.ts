@@ -11,6 +11,8 @@ import {
 } from '../common/important-players.catalog';
 
 const HANGMAN_TTL = 60 * 15;
+const HANGMAN_LETTER_ATTEMPTS = 10;
+const HANGMAN_SOLVE_ATTEMPTS = 2;
 const SORT_TTL = 60 * 15;
 const MARKET_TTL = 60 * 15;
 const IMPORTANT_SEED_ENTRIES = IMPORTANT_PLAYERS_CATALOG.map((entry) => ({
@@ -183,11 +185,18 @@ export class GamesService {
         const payload = {
           secret,
           masked,
-          attemptsLeft: 8,
+          letterAttemptsLeft: HANGMAN_LETTER_ATTEMPTS,
+          solveAttemptsLeft: HANGMAN_SOLVE_ATTEMPTS,
           guessed: [] as string[],
         };
         await this.redis.setJson(`hangman:${session.id}`, payload, HANGMAN_TTL);
-        return { sessionId: session.id, masked, attemptsLeft: 8 };
+        return {
+          sessionId: session.id,
+          masked,
+          letterAttemptsLeft: HANGMAN_LETTER_ATTEMPTS,
+          solveAttemptsLeft: HANGMAN_SOLVE_ATTEMPTS,
+          attemptsLeft: HANGMAN_LETTER_ATTEMPTS + HANGMAN_SOLVE_ATTEMPTS,
+        };
       }
     }
 
@@ -206,11 +215,18 @@ export class GamesService {
     const payload = {
       secret,
       masked,
-      attemptsLeft: 8,
+      letterAttemptsLeft: HANGMAN_LETTER_ATTEMPTS,
+      solveAttemptsLeft: HANGMAN_SOLVE_ATTEMPTS,
       guessed: [] as string[],
     };
     await this.redis.setJson(`hangman:${session.id}`, payload, HANGMAN_TTL);
-    return { sessionId: session.id, masked, attemptsLeft: 8 };
+    return {
+      sessionId: session.id,
+      masked,
+      letterAttemptsLeft: HANGMAN_LETTER_ATTEMPTS,
+      solveAttemptsLeft: HANGMAN_SOLVE_ATTEMPTS,
+      attemptsLeft: HANGMAN_LETTER_ATTEMPTS + HANGMAN_SOLVE_ATTEMPTS,
+    };
   }
 
   async hangmanGuess(sessionId: number, guess: string) {
@@ -219,13 +235,15 @@ export class GamesService {
     if (!state) throw new NotFoundException('Session not found');
     const normalized = guess.toLowerCase().trim();
     let updatedMasked = state.masked;
+    state.letterAttemptsLeft = Number(state.letterAttemptsLeft ?? HANGMAN_LETTER_ATTEMPTS);
+    state.solveAttemptsLeft = Number(state.solveAttemptsLeft ?? HANGMAN_SOLVE_ATTEMPTS);
 
     if (normalized.length === 1) {
       if (!state.guessed.includes(normalized)) {
         state.guessed.push(normalized);
       }
       if (!state.secret.includes(normalized)) {
-        state.attemptsLeft -= 1;
+        state.letterAttemptsLeft -= 1;
       } else {
         let chars = updatedMasked.split('');
         for (let i = 0; i < state.secret.length; i++) {
@@ -239,12 +257,12 @@ export class GamesService {
       if (normalized === state.secret) {
         updatedMasked = state.secret;
       } else {
-        state.attemptsLeft -= 1;
+        state.solveAttemptsLeft -= 1;
       }
     }
 
     const solved = updatedMasked === state.secret;
-    const failed = state.attemptsLeft <= 0;
+    const failed = state.letterAttemptsLeft <= 0 || state.solveAttemptsLeft <= 0;
     state.masked = updatedMasked;
     await this.redis.setJson(key, state, HANGMAN_TTL);
 
@@ -257,7 +275,9 @@ export class GamesService {
 
     return {
       masked: updatedMasked,
-      attemptsLeft: state.attemptsLeft,
+      letterAttemptsLeft: state.letterAttemptsLeft,
+      solveAttemptsLeft: state.solveAttemptsLeft,
+      attemptsLeft: Number(state.letterAttemptsLeft || 0) + Number(state.solveAttemptsLeft || 0),
       solved,
       failed,
       answer: failed ? state.secret : undefined,
@@ -355,6 +375,7 @@ export class GamesService {
   }
 
   async marketStart(leagueApiId?: number, pool: 'important' | 'all' = 'important') {
+    const effectivePool: 'important' = 'important';
     const importantMap = getImportantPlayersMap();
     const players = await this.prisma.player.findMany({
       where: {
@@ -376,7 +397,7 @@ export class GamesService {
         };
       })
       .filter((row) => {
-        if (pool === 'important') return Number(row.marketValueM || 0) > 0;
+        if (effectivePool === 'important') return Number(row.marketValueM || 0) > 0;
         return true;
       })
       .filter((row) => {
@@ -386,7 +407,7 @@ export class GamesService {
         return true;
       });
 
-    if (candidates.length === 0 && pool === 'important') {
+    if (candidates.length === 0 && effectivePool === 'important') {
       const statsFallback = await this.prisma.playerStat.findMany({
         where: {
           ...(leagueApiId ? { leagueApiId } : {}),

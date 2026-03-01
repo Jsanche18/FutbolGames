@@ -13,6 +13,14 @@ type Slot = {
   player?: SearchPlayer | null;
 };
 
+type FormationName = '433' | '442' | '4231' | '352' | '343';
+type PitchSlot = {
+  id: string;
+  position: string;
+  x: number;
+  y: number;
+};
+
 const TOP_LEAGUES = [
   { label: 'Todas las ligas', value: '' },
   { label: 'España - La Liga', value: '140' },
@@ -27,7 +35,7 @@ const TOP_LEAGUES = [
 ];
 
 export default function LineupPage() {
-  const [formation, setFormation] = useState<'433' | '442'>('433');
+  const [formation, setFormation] = useState<FormationName>('433');
   const [selectedPlayer, setSelectedPlayer] = useState<SearchPlayer | null>(null);
   const [selectedLeague, setSelectedLeague] = useState<string>('');
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -47,39 +55,95 @@ export default function LineupPage() {
     [],
   );
 
-  const slotLayout = useMemo(() => {
-    if (formation === '442') {
-      return [
-        { slotId: 'gk', position: 'GK' },
-        { slotId: 'lb', position: 'LB' },
-        { slotId: 'cb1', position: 'CB' },
-        { slotId: 'cb2', position: 'CB' },
-        { slotId: 'rb', position: 'RB' },
-        { slotId: 'lm', position: 'LM' },
-        { slotId: 'cm1', position: 'CM' },
-        { slotId: 'cm2', position: 'CM' },
-        { slotId: 'rm', position: 'RM' },
-        { slotId: 'st1', position: 'ST' },
-        { slotId: 'st2', position: 'ST' },
-      ];
-    }
-    return [
-      { slotId: 'gk', position: 'GK' },
-      { slotId: 'lb', position: 'LB' },
-      { slotId: 'cb1', position: 'CB' },
-      { slotId: 'cb2', position: 'CB' },
-      { slotId: 'rb', position: 'RB' },
-      { slotId: 'cm1', position: 'CM' },
-      { slotId: 'cm2', position: 'CM' },
-      { slotId: 'cm3', position: 'CM' },
-      { slotId: 'lw', position: 'LW' },
-      { slotId: 'st', position: 'ST' },
-      { slotId: 'rw', position: 'RW' },
-    ];
-  }, [formation]);
+  const formations = useMemo(
+    () =>
+      ({
+        '433': [
+          { id: 'gk', position: 'GK', x: 50, y: 88 },
+          { id: 'lb', position: 'LB', x: 15, y: 70 },
+          { id: 'cb1', position: 'CB', x: 38, y: 70 },
+          { id: 'cb2', position: 'CB', x: 62, y: 70 },
+          { id: 'rb', position: 'RB', x: 85, y: 70 },
+          { id: 'cm1', position: 'CM', x: 25, y: 48 },
+          { id: 'cm2', position: 'CM', x: 50, y: 48 },
+          { id: 'cm3', position: 'CM', x: 75, y: 48 },
+          { id: 'lw', position: 'LW', x: 25, y: 20 },
+          { id: 'st', position: 'ST', x: 50, y: 20 },
+          { id: 'rw', position: 'RW', x: 75, y: 20 },
+        ],
+        '442': [
+          { id: 'gk', position: 'GK', x: 50, y: 88 },
+          { id: 'lb', position: 'LB', x: 15, y: 70 },
+          { id: 'cb1', position: 'CB', x: 38, y: 70 },
+          { id: 'cb2', position: 'CB', x: 62, y: 70 },
+          { id: 'rb', position: 'RB', x: 85, y: 70 },
+          { id: 'lm', position: 'LM', x: 15, y: 48 },
+          { id: 'cm1', position: 'CM', x: 38, y: 48 },
+          { id: 'cm2', position: 'CM', x: 62, y: 48 },
+          { id: 'rm', position: 'RM', x: 85, y: 48 },
+          { id: 'st1', position: 'ST', x: 35, y: 20 },
+          { id: 'st2', position: 'ST', x: 65, y: 20 },
+        ],
+        '4231': [
+          { id: 'gk', position: 'GK', x: 50, y: 88 },
+          { id: 'lb', position: 'LB', x: 15, y: 70 },
+          { id: 'cb1', position: 'CB', x: 38, y: 70 },
+          { id: 'cb2', position: 'CB', x: 62, y: 70 },
+          { id: 'rb', position: 'RB', x: 85, y: 70 },
+          { id: 'cdm1', position: 'CDM', x: 40, y: 56 },
+          { id: 'cdm2', position: 'CDM', x: 60, y: 56 },
+          { id: 'lam', position: 'LM', x: 23, y: 36 },
+          { id: 'cam', position: 'CAM', x: 50, y: 34 },
+          { id: 'ram', position: 'RM', x: 77, y: 36 },
+          { id: 'st', position: 'ST', x: 50, y: 18 },
+        ],
+        '352': [
+          { id: 'gk', position: 'GK', x: 50, y: 88 },
+          { id: 'cb1', position: 'CB', x: 28, y: 70 },
+          { id: 'cb2', position: 'CB', x: 50, y: 72 },
+          { id: 'cb3', position: 'CB', x: 72, y: 70 },
+          { id: 'lwb', position: 'LB', x: 12, y: 48 },
+          { id: 'cm1', position: 'CM', x: 38, y: 50 },
+          { id: 'cm2', position: 'CM', x: 62, y: 50 },
+          { id: 'rwb', position: 'RB', x: 88, y: 48 },
+          { id: 'cam', position: 'CAM', x: 50, y: 34 },
+          { id: 'st1', position: 'ST', x: 36, y: 18 },
+          { id: 'st2', position: 'ST', x: 64, y: 18 },
+        ],
+        '343': [
+          { id: 'gk', position: 'GK', x: 50, y: 88 },
+          { id: 'cb1', position: 'CB', x: 28, y: 70 },
+          { id: 'cb2', position: 'CB', x: 50, y: 72 },
+          { id: 'cb3', position: 'CB', x: 72, y: 70 },
+          { id: 'lm', position: 'LM', x: 14, y: 50 },
+          { id: 'cm1', position: 'CM', x: 38, y: 50 },
+          { id: 'cm2', position: 'CM', x: 62, y: 50 },
+          { id: 'rm', position: 'RM', x: 86, y: 50 },
+          { id: 'lw', position: 'LW', x: 22, y: 22 },
+          { id: 'st', position: 'ST', x: 50, y: 18 },
+          { id: 'rw', position: 'RW', x: 78, y: 22 },
+        ],
+      }) satisfies Record<FormationName, PitchSlot[]>,
+    [],
+  );
+
+  const slotLayout = useMemo(
+    () =>
+      formations[formation].map((slot) => ({
+        slotId: slot.id,
+        position: slot.position,
+      })),
+    [formation, formations],
+  );
 
   useEffect(() => {
-    setSlots(slotLayout.map((slot) => ({ ...slot, player: null })));
+    setSlots((prev) => {
+      const byId = new Map(prev.map((slot) => [slot.slotId, slot]));
+      return slotLayout.map((slot) => {
+        const existing = byId.get(slot.slotId);
+        return { ...slot, player: existing?.player || null };
+      });
+    });
   }, [slotLayout]);
 
   useEffect(() => {
@@ -98,9 +162,11 @@ export default function LineupPage() {
       return;
     }
     setSlots((prev) =>
-      prev.map((s) =>
-        s.slotId === slot.slotId ? { ...s, player: selectedPlayer } : s,
-      ),
+      prev.map((s) => {
+        if (s.slotId === slot.slotId) return { ...s, player: selectedPlayer };
+        if (s.player?.apiId === selectedPlayer.apiId) return { ...s, player: null };
+        return s;
+      }),
     );
     setSelectedPlayer(null);
     setMessage('');
@@ -130,7 +196,7 @@ export default function LineupPage() {
   };
 
   const clearAll = () => {
-    setSlots(slotLayout.map((slot) => ({ ...slot, player: null })));
+    setSlots((prev) => prev.map((slot) => ({ ...slot, player: null })));
     setMessage('');
   };
 
@@ -146,7 +212,7 @@ export default function LineupPage() {
 
         <Panel title="Campo">
           <div className="mb-4 flex items-center gap-3">
-            {(['433', '442'] as const).map((f) => (
+            {(Object.keys(formations) as FormationName[]).map((f) => (
               <button
                 key={f}
                 className={`rounded-full px-4 py-2 text-sm ${
@@ -159,7 +225,12 @@ export default function LineupPage() {
             ))}
             <span className="text-sm text-clay/60">{filledCount}/11</span>
           </div>
-          <PitchBoard formation={formation} selectedPlayer={selectedPlayer} slots={slots} onSlotClick={onSlotClick} />
+          <PitchBoard
+            layout={formations[formation]}
+            selectedPlayer={selectedPlayer}
+            slots={slots}
+            onSlotClick={onSlotClick}
+          />
         </Panel>
 
         <Panel title="Buscar jugador">
