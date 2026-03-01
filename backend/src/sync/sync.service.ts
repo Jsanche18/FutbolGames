@@ -4,6 +4,10 @@ import { RedisService } from '../common/redis/redis.service';
 import { ApiFootballClient } from '../football/api-football.client';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import {
+  IMPORTANT_PLAYERS_CATALOG,
+  normalizeImportantName,
+} from '../common/important-players.catalog';
 
 @Injectable()
 export class SyncService implements OnModuleInit {
@@ -123,6 +127,48 @@ export class SyncService implements OnModuleInit {
       missingBefore: missingBefore.length,
       missingAfter: missingAfter.length,
       missingPlayers: missingAfter,
+    };
+  }
+
+  async syncImportantPlayers(season?: number) {
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const rows = [];
+    for (const seed of IMPORTANT_PLAYERS_CATALOG) {
+      await this.throttle();
+      const data = await this.api.getPlayers({ search: seed.name, season: resolvedSeason, page: 1 });
+      const response = (data as any)?.response || [];
+      const match = this.pickBestPlayerMatch(response, seed.name, seed.club);
+      if (match) {
+        await this.upsertPlayerFromApiItem(match);
+        rows.push({
+          name: seed.name,
+          club: seed.club,
+          marketValueM: seed.marketValueM,
+          found: true,
+          apiId: match?.player?.id,
+          resolvedName: this.buildPlayerName(match?.player?.name, match?.player?.firstname, match?.player?.lastname),
+          resolvedTeam: match?.statistics?.[0]?.team?.name,
+          photoUrl: match?.player?.photo,
+        });
+      } else {
+        rows.push({
+          name: seed.name,
+          club: seed.club,
+          marketValueM: seed.marketValueM,
+          found: false,
+          apiId: null,
+          resolvedName: null,
+          resolvedTeam: null,
+          photoUrl: null,
+        });
+      }
+    }
+    return {
+      season: resolvedSeason,
+      total: rows.length,
+      found: rows.filter((row) => row.found).length,
+      missing: rows.filter((row) => !row.found).length,
+      rows,
     };
   }
 
@@ -402,28 +448,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private getImportantPlayersList() {
-    return [
-      'Kylian Mbappe',
-      'Thibaut Courtois',
-      'Erling Haaland',
-      'Vinicius Junior',
-      'Jude Bellingham',
-      'Kevin De Bruyne',
-      'Harry Kane',
-      'Mohamed Salah',
-      'Rodri',
-      'Lautaro Martinez',
-      'Robert Lewandowski',
-      'Bukayo Saka',
-      'Pedri',
-      'Florian Wirtz',
-      'Jamal Musiala',
-      'Lionel Messi',
-      'Cristiano Ronaldo',
-      'Neymar',
-      'Antoine Griezmann',
-      'Federico Valverde',
-    ];
+    return IMPORTANT_PLAYERS_CATALOG.map((item) => item.name);
   }
 
   private async findMissingImportantPlayers() {
@@ -443,9 +468,19 @@ export class SyncService implements OnModuleInit {
   private async repairImportantPlayers(missingNames: string[], season: number) {
     for (const name of missingNames) {
       await this.throttle();
+      const seed = IMPORTANT_PLAYERS_CATALOG.find(
+        (item) => normalizeImportantName(item.name) === normalizeImportantName(name),
+      );
       const data = await this.api.getPlayers({ search: name, season, page: 1 });
       const response = (data as any)?.response || [];
-      for (const item of response) {
+      if (seed) {
+        const match = this.pickBestPlayerMatch(response, seed.name, seed.club);
+        if (match) {
+          await this.upsertPlayerFromApiItem(match);
+          continue;
+        }
+      }
+      for (const item of response.slice(0, 1)) {
         await this.upsertPlayerFromApiItem(item);
       }
     }
@@ -491,6 +526,31 @@ export class SyncService implements OnModuleInit {
       .replace(/\./g, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private pickBestPlayerMatch(candidates: any[], name: string, club: string) {
+    const targetName = this.normalizeText(name);
+    const targetClub = this.normalizeText(club);
+    let best: any = null;
+    let bestScore = -1;
+    for (const candidate of candidates || []) {
+      const player = candidate?.player || {};
+      const stats = candidate?.statistics?.[0] || {};
+      const playerName = this.normalizeText(
+        this.buildPlayerName(player?.name, player?.firstname, player?.lastname),
+      );
+      const teamName = this.normalizeText(stats?.team?.name || '');
+      let score = 0;
+      if (playerName === targetName) score += 4;
+      if (playerName.includes(targetName) || targetName.includes(playerName)) score += 2;
+      if (teamName === targetClub) score += 3;
+      if (teamName.includes(targetClub) || targetClub.includes(teamName)) score += 1;
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 2 ? best : null;
   }
 
   private async throttle() {
