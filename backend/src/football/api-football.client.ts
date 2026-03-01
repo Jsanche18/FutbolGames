@@ -66,6 +66,10 @@ export class ApiFootballClient {
     return this.request('/players', params);
   }
 
+  getPlayersSquads(params: Record<string, unknown>) {
+    return this.request('/players/squads', params);
+  }
+
   getPlayerTrophies(params: Record<string, unknown>) {
     return this.request('/trophies', params);
   }
