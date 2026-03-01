@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Queue, Worker } from 'bullmq';
 import { RedisService } from '../common/redis/redis.service';
 import { ApiFootballClient } from '../football/api-football.client';
@@ -10,9 +10,12 @@ import {
 } from '../common/important-players.catalog';
 
 @Injectable()
-export class SyncService implements OnModuleInit {
-  private queue!: Queue;
+export class SyncService implements OnModuleInit, OnModuleDestroy {
+  private queue: Queue | null = null;
+  private queueEnabled = false;
   private importantCandidatesCache = new Map<string, any[]>();
+  private directRefreshTimer: NodeJS.Timeout | null = null;
+  private autoPreloadInProgress = false;
 
   constructor(
     private redis: RedisService,
@@ -22,61 +25,203 @@ export class SyncService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    const connection = this.redis.getConnectionOptions();
-    this.queue = new Queue('sync', { connection });
+    try {
+      if (!this.redis.isReady()) {
+        this.queueEnabled = false;
+        console.warn('[sync] Queue disabled: Redis unavailable');
+      } else {
+        const connection = this.redis.getConnectionOptions();
+        this.queue = new Queue('sync', { connection });
 
-    new Worker(
-      'sync',
-      async (job) => {
-        switch (job.name) {
-          case 'sync-leagues':
-            return this.handleLeagues(job.data.season);
-          case 'sync-teams':
-            return this.handleTeams(job.data.leagueApiId, job.data.season);
-          case 'sync-players':
-            return this.handlePlayers(job.data.teamApiId, job.data.season);
-          case 'sync-player':
-            return this.handlePlayer(job.data.apiId, job.data.season);
-          case 'sync-league-players':
-            return this.handleLeaguePlayers(job.data.leagueApiId, job.data.season);
-          case 'sync-bootstrap':
-            return this.handleBootstrap(job.data.season);
-          case 'sync-guarantee':
-            return this.handleGuarantee(job.data.season);
-          default:
-            return null;
-        }
-      },
-      { connection },
-    );
+        new Worker(
+          'sync',
+          async (job) => {
+            switch (job.name) {
+              case 'sync-leagues':
+                return this.handleLeagues(job.data.season);
+              case 'sync-teams':
+                return this.handleTeams(job.data.leagueApiId, job.data.season);
+              case 'sync-players':
+                return this.handlePlayers(job.data.teamApiId, job.data.season);
+              case 'sync-player':
+                return this.handlePlayer(job.data.apiId, job.data.season);
+              case 'sync-league-players':
+                return this.handleLeaguePlayers(job.data.leagueApiId, job.data.season);
+              case 'sync-bootstrap':
+                return this.handleBootstrap(job.data.season);
+              case 'sync-guarantee':
+                return this.handleGuarantee(job.data.season);
+              case 'sync-preload':
+                return this.handlePreload(job.data.season);
+              default:
+                return null;
+            }
+          },
+          { connection },
+        );
+        this.queueEnabled = true;
+      }
+    } catch (error: any) {
+      this.queueEnabled = false;
+      console.warn('[sync] Queue init failed, using direct mode:', error?.message || error);
+    }
+
+    void this.tryAutoPreloadOnBoot();
+    void this.scheduleAutoRefresh();
   }
 
-  enqueueLeagues(season?: number) {
+  onModuleDestroy() {
+    if (this.directRefreshTimer) {
+      clearInterval(this.directRefreshTimer);
+      this.directRefreshTimer = null;
+    }
+  }
+
+  async enqueueLeagues(season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handleLeagues(season);
+      return { mode: 'direct', job: 'sync-leagues', season };
+    }
     return this.queue.add('sync-leagues', { season });
   }
 
-  enqueueTeams(leagueApiId: number, season?: number) {
+  async enqueueTeams(leagueApiId: number, season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handleTeams(leagueApiId, season);
+      return { mode: 'direct', job: 'sync-teams', leagueApiId, season };
+    }
     return this.queue.add('sync-teams', { leagueApiId, season });
   }
 
-  enqueuePlayers(teamApiId: number, season?: number) {
+  async enqueuePlayers(teamApiId: number, season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handlePlayers(teamApiId, season);
+      return { mode: 'direct', job: 'sync-players', teamApiId, season };
+    }
     return this.queue.add('sync-players', { teamApiId, season });
   }
 
-  enqueuePlayer(apiId: number, season?: number) {
+  async enqueuePlayer(apiId: number, season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handlePlayer(apiId, season);
+      return { mode: 'direct', job: 'sync-player', apiId, season };
+    }
     return this.queue.add('sync-player', { apiId, season });
   }
 
-  enqueueLeaguePlayers(leagueApiId: number, season?: number) {
+  async enqueueLeaguePlayers(leagueApiId: number, season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handleLeaguePlayers(leagueApiId, season);
+      return { mode: 'direct', job: 'sync-league-players', leagueApiId, season };
+    }
     return this.queue.add('sync-league-players', { leagueApiId, season });
   }
 
-  enqueueBootstrap(season?: number) {
+  async enqueueBootstrap(season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      await this.handleBootstrap(season);
+      return { mode: 'direct', job: 'sync-bootstrap', season };
+    }
     return this.queue.add('sync-bootstrap', { season });
   }
 
-  enqueueGuarantee(season?: number) {
+  async enqueueGuarantee(season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      const result = await this.handleGuarantee(season);
+      return { mode: 'direct', job: 'sync-guarantee', result };
+    }
     return this.queue.add('sync-guarantee', { season });
+  }
+
+  async enqueuePreload(season?: number) {
+    if (!this.queueEnabled || !this.queue) {
+      const result = await this.handlePreload(season);
+      return { mode: 'direct', job: 'sync-preload', result };
+    }
+    return this.queue.add('sync-preload', { season });
+  }
+
+  private async tryAutoPreloadOnBoot() {
+    const enabled = this.configService.get<string>('AUTO_PRELOAD_ON_BOOT');
+    const isEnabled = enabled ? enabled.toLowerCase() !== 'false' : true;
+    if (!isEnabled) return;
+    const season = Number(this.configService.get<string>('AUTO_PRELOAD_SEASON') || this.getDefaultSeason());
+    if (!this.queueEnabled || !this.queue || !this.redis.isReady()) {
+      if (this.autoPreloadInProgress) return;
+      this.autoPreloadInProgress = true;
+      try {
+        await this.enqueuePreload(season);
+        console.log(`[sync] Auto preload (direct mode) executed for season ${season}`);
+      } finally {
+        this.autoPreloadInProgress = false;
+      }
+      return;
+    }
+
+    const delayMs = Number(this.configService.get<string>('AUTO_PRELOAD_DELAY_MS') || 8000);
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    const lockSeconds = Number(this.configService.get<string>('AUTO_PRELOAD_LOCK_SECONDS') || 43200);
+    const lockKey = `sync:preload:boot:${season}`;
+
+    try {
+      const lock = await this.redis
+        .getClient()
+        .set(lockKey, String(Date.now()), 'EX', Math.max(60, lockSeconds), 'NX');
+      if (lock !== 'OK') {
+        return;
+      }
+      await this.enqueuePreload(season);
+      console.log(`[sync] Auto preload enqueued for season ${season}`);
+    } catch (error: any) {
+      console.error('[sync] Auto preload failed:', error?.message || error);
+    }
+  }
+
+  private async scheduleAutoRefresh() {
+    const enabled = this.configService.get<string>('AUTO_REFRESH_ENABLED');
+    const isEnabled = enabled ? enabled.toLowerCase() !== 'false' : true;
+    if (!isEnabled) return;
+    const season = Number(this.configService.get<string>('AUTO_REFRESH_SEASON') || this.getDefaultSeason());
+    const intervalMinutes = Number(this.configService.get<string>('AUTO_REFRESH_INTERVAL_MINUTES') || 360);
+    const intervalMs = Math.max(15, intervalMinutes) * 60 * 1000;
+    if (!this.queueEnabled || !this.queue) {
+      if (this.directRefreshTimer) {
+        clearInterval(this.directRefreshTimer);
+      }
+      this.directRefreshTimer = setInterval(async () => {
+        try {
+          await this.enqueuePreload(season);
+          console.log(`[sync] Auto refresh (direct mode) executed for season ${season}`);
+        } catch (error: any) {
+          console.error('[sync] Auto refresh direct run failed:', error?.message || error);
+        }
+      }, intervalMs);
+      console.log(
+        `[sync] Auto refresh scheduled in direct mode every ${Math.round(intervalMs / 60000)} minutes for season ${season}`,
+      );
+      return;
+    }
+
+    try {
+      await this.queue.add(
+        'sync-preload',
+        { season },
+        {
+          jobId: `sync-preload:repeat:${season}`,
+          repeat: { every: intervalMs },
+          removeOnComplete: true,
+          removeOnFail: 10,
+        },
+      );
+      console.log(
+        `[sync] Auto refresh scheduled every ${Math.round(intervalMs / 60000)} minutes for season ${season}`,
+      );
+    } catch (error: any) {
+      console.error('[sync] Auto refresh schedule failed:', error?.message || error);
+    }
   }
 
   async getCoverage() {
@@ -302,6 +447,21 @@ export class SyncService implements OnModuleInit {
       importantMissingBefore: missingBefore.length,
       importantMissingAfter: missingAfter.length,
       importantMissingNames: missingAfter,
+    };
+  }
+
+  private async handlePreload(season?: number) {
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const guarantee = await this.handleGuarantee(resolvedSeason);
+    const important = await this.syncImportantPlayers(resolvedSeason);
+    return {
+      season: resolvedSeason,
+      guarantee,
+      important: {
+        total: important.total,
+        found: important.found,
+        missing: important.missing,
+      },
     };
   }
 

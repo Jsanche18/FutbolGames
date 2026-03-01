@@ -7,6 +7,7 @@ import { FootballModule } from './football/football.module';
 import { SyncModule } from './sync/sync.module';
 import { GamesModule } from './games/games.module';
 import { MultiplayerModule } from './multiplayer/multiplayer.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { MultiplayerModule } from './multiplayer/multiplayer.module';
     SyncModule,
     GamesModule,
     MultiplayerModule,
+    HealthModule,
   ],
 })
 export class AppModule {}

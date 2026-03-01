@@ -17,6 +17,7 @@ const IMPORTANT_SEED_ENTRIES = IMPORTANT_PLAYERS_CATALOG.map((entry) => ({
   normalizedName: normalizeImportantName(entry.name),
   normalizedClub: normalizeImportantName(entry.club),
 }));
+const SEARCH_NORMALIZED_CACHE_TTL = 60 * 5;
 const IMPORTANT_HYDRATE_CACHE_TTL_MS = 1000 * 60 * 30;
 
 @Injectable()
@@ -35,62 +36,116 @@ export class FootballService {
     const cacheKey = 'countries:all';
     const cached = await this.redis.getJson<any>(cacheKey);
     if (cached) return cached;
-    const data = await this.api.getCountries();
-    await this.redis.setJson(cacheKey, data, CACHE_TTL);
-    if (Array.isArray((data as any)?.response)) {
-      const countries = (data as any).response.map((c: any) => ({
-        name: c.name,
-        code: c.code,
-      }));
-      await this.prisma.country.createMany({ data: countries, skipDuplicates: true });
+    try {
+      const data = await this.api.getCountries();
+      await this.redis.setJson(cacheKey, data, CACHE_TTL);
+      if (Array.isArray((data as any)?.response)) {
+        const countries = (data as any).response.map((c: any) => ({
+          name: c.name,
+          code: c.code,
+        }));
+        await this.prisma.country.createMany({ data: countries, skipDuplicates: true });
+      }
+      return data;
+    } catch {
+      const dbCountries = await this.prisma.country.findMany({
+        select: { name: true, code: true },
+        orderBy: { name: 'asc' },
+      });
+      const fallback = { response: dbCountries };
+      await this.redis.setJson(cacheKey, fallback, CACHE_TTL);
+      return fallback;
     }
-    return data;
   }
 
   async getLeagues(countryCode?: string, season?: number, page?: number) {
     const cacheKey = `leagues:v4:${countryCode || 'all'}:${season || 'all'}`;
     const cached = await this.redis.getJson<any>(cacheKey);
     if (cached) return cached;
-    const data = await this.api.getLeagues({ season });
-    const responseAll = (data as any)?.response || [];
-    const filtered = countryCode
-      ? responseAll.filter((item: any) => {
-          const code = item.country?.code || '';
-          const name = item.country?.name || '';
-          return code === countryCode || name.toLowerCase() === countryCode.toLowerCase();
-        })
-      : responseAll;
-    const result = { ...(data as any), response: filtered };
-    await this.redis.setJson(cacheKey, result, CACHE_TTL);
-    const leagues = filtered.map((item: any) => ({
-      apiId: item.league?.id,
-      name: item.league?.name,
-      countryCode: item.country?.code,
-      season: item.seasons?.[0]?.year || season,
-      logoUrl: item.league?.logo,
-    })).filter((l: any) => l.apiId);
-    await this.prisma.league.createMany({ data: leagues, skipDuplicates: true });
-    return result;
+    try {
+      const data = await this.api.getLeagues({ season });
+      const responseAll = (data as any)?.response || [];
+      const filtered = countryCode
+        ? responseAll.filter((item: any) => {
+            const code = item.country?.code || '';
+            const name = item.country?.name || '';
+            return code === countryCode || name.toLowerCase() === countryCode.toLowerCase();
+          })
+        : responseAll;
+      const result = { ...(data as any), response: filtered };
+      await this.redis.setJson(cacheKey, result, CACHE_TTL);
+      const leagues = filtered.map((item: any) => ({
+        apiId: item.league?.id,
+        name: item.league?.name,
+        countryCode: item.country?.code,
+        season: item.seasons?.[0]?.year || season,
+        logoUrl: item.league?.logo,
+      })).filter((l: any) => l.apiId);
+      await this.prisma.league.createMany({ data: leagues, skipDuplicates: true });
+      return result;
+    } catch {
+      const dbLeagues = await this.prisma.league.findMany({
+        where: {
+          ...(season ? { season } : {}),
+          ...(countryCode ? { countryCode } : {}),
+        },
+        select: { apiId: true, name: true, countryCode: true, season: true, logoUrl: true },
+        orderBy: { name: 'asc' },
+      });
+      const fallback = {
+        response: dbLeagues.map((league) => ({
+          league: { id: league.apiId, name: league.name, logo: league.logoUrl },
+          country: { code: league.countryCode },
+          seasons: [{ year: league.season }],
+        })),
+      };
+      await this.redis.setJson(cacheKey, fallback, CACHE_TTL);
+      return fallback;
+    }
   }
 
   async getTeams(leagueApiId?: number, season?: number, page?: number) {
     const cacheKey = `teams:${leagueApiId || 'all'}:${season || 'all'}:${page || 1}`;
     const cached = await this.redis.getJson<any>(cacheKey);
     if (cached) return cached;
-    const data = await this.api.getTeams({ league: leagueApiId, season, page });
-    await this.redis.setJson(cacheKey, data, CACHE_TTL);
-    const response = (data as any)?.response || [];
-    const teams = response.map((item: any) => ({
-      apiId: item.team?.id,
-      name: item.team?.name,
-      countryCode: item.team?.country,
-      leagueApiId,
-      season,
-      logoUrl: item.team?.logo,
-      isNational: item.team?.national || false,
-    })).filter((t: any) => t.apiId);
-    await this.prisma.team.createMany({ data: teams, skipDuplicates: true });
-    return data;
+    try {
+      const data = await this.api.getTeams({ league: leagueApiId, season, page });
+      await this.redis.setJson(cacheKey, data, CACHE_TTL);
+      const response = (data as any)?.response || [];
+      const teams = response.map((item: any) => ({
+        apiId: item.team?.id,
+        name: item.team?.name,
+        countryCode: item.team?.country,
+        leagueApiId,
+        season,
+        logoUrl: item.team?.logo,
+        isNational: item.team?.national || false,
+      })).filter((t: any) => t.apiId);
+      await this.prisma.team.createMany({ data: teams, skipDuplicates: true });
+      return data;
+    } catch {
+      const dbTeams = await this.prisma.team.findMany({
+        where: {
+          ...(leagueApiId ? { leagueApiId } : {}),
+          ...(season ? { season } : {}),
+        },
+        select: { apiId: true, name: true, countryCode: true, logoUrl: true, isNational: true },
+        orderBy: { name: 'asc' },
+      });
+      const fallback = {
+        response: dbTeams.map((team) => ({
+          team: {
+            id: team.apiId,
+            name: team.name,
+            country: team.countryCode,
+            logo: team.logoUrl,
+            national: team.isNational,
+          },
+        })),
+      };
+      await this.redis.setJson(cacheKey, fallback, CACHE_TTL);
+      return fallback;
+    }
   }
 
   private getDefaultSeason() {
@@ -127,41 +182,23 @@ export class FootballService {
   ) {
     const correctedQuery = this.correctQuery(q);
     const resolvedSeason = season ?? this.getDefaultSeason();
-    const shouldCallApi = Boolean(correctedQuery || teamApiId || leagueApiId);
-    let apiItems: any[] = [];
-    if (shouldCallApi) {
-      const data = await this.searchPlayers(correctedQuery, teamApiId, leagueApiId, season, page);
-      let response = (data as any)?.response || [];
-      if (response.length === 0 && correctedQuery !== q) {
-        const fallbackData = await this.searchPlayers(q, teamApiId, leagueApiId, season, page);
-        response = (fallbackData as any)?.response || [];
-      }
-      apiItems = response.map((item: any) => {
-        const player = item.player || {};
-        const stats = item.statistics?.[0] || {};
-        const primaryPosition = stats?.games?.position || player.position || '';
-        const rating = Number(stats?.games?.rating || 0) || 0;
-        const minutes = Number(stats?.games?.minutes || 0) || 0;
-        const goals = Number(stats?.goals?.total || 0) || 0;
-        const assists = Number(stats?.goals?.assists || 0) || 0;
-        return {
-          apiId: player.id,
-          name: this.buildPlayerName(player.name, player.firstname, player.lastname),
-          photoUrl: player.photo,
-          nationality: player.nationality,
-          teamApiId: stats?.team?.id,
-          leagueApiId: stats?.league?.id,
-          teamName: stats?.team?.name,
-          primaryPosition,
-          allowedPositions: mapAllowedPositions(primaryPosition),
-          goals,
-          assists,
-          minutes,
-          rating,
-        };
-      });
+    const cacheKey = [
+      'players:normalized:v3',
+      correctedQuery || 'all',
+      teamApiId || 'all',
+      leagueApiId || 'all',
+      resolvedSeason || 'all',
+      page || 1,
+      nationality || 'all',
+      position || 'all',
+      importantOnly ? 'important' : 'all',
+    ].join(':');
+    const cached = await this.redis.getJson<any>(cacheKey);
+    if (cached) {
+      return cached;
     }
 
+    const shouldCallApi = Boolean(correctedQuery || teamApiId || leagueApiId);
     const dbPlayers = await this.prisma.player.findMany({
       where: {
         ...(correctedQuery
@@ -179,7 +216,7 @@ export class FootballService {
         ...(position ? { position: { contains: position, mode: 'insensitive' } } : {}),
       },
       include: { team: true, stats: true },
-      take: importantOnly ? 200 : 50,
+      take: importantOnly ? 260 : 120,
     });
 
     const dbItems = dbPlayers.map((player) => {
@@ -204,6 +241,50 @@ export class FootballService {
         rating: Number(bestStat?.rating || 0) || 0,
       };
     });
+
+    let apiItems: any[] = [];
+    const shouldFallbackToApi =
+      shouldCallApi &&
+      (!importantOnly || dbItems.length < 5) &&
+      dbItems.length < (importantOnly ? 20 : 12);
+    if (shouldFallbackToApi) {
+      const data = await this.searchPlayers(correctedQuery, teamApiId, leagueApiId, resolvedSeason, page);
+      let response = (data as any)?.response || [];
+      if (response.length === 0 && correctedQuery !== q) {
+        const fallbackData = await this.searchPlayers(q, teamApiId, leagueApiId, resolvedSeason, page);
+        response = (fallbackData as any)?.response || [];
+      }
+      apiItems = response.map((item: any) => {
+        const player = item.player || {};
+        const stats = item.statistics?.[0] || {};
+        const primaryPosition = stats?.games?.position || player.position || '';
+        const rating = Number(stats?.games?.rating || 0) || 0;
+        const minutes = Number(stats?.games?.minutes || 0) || 0;
+        const goals = Number(stats?.goals?.total || 0) || 0;
+        const assists = Number(stats?.goals?.assists || 0) || 0;
+        return {
+          apiId: player.id,
+          name: this.buildPlayerName(player.name, player.firstname, player.lastname),
+          photoUrl: player.photo,
+          nationality: player.nationality,
+          teamApiId: stats?.team?.id,
+          leagueApiId: stats?.league?.id,
+          teamName: stats?.team?.name,
+          primaryPosition,
+          allowedPositions: mapAllowedPositions(primaryPosition),
+          goals,
+          assists,
+          minutes,
+          rating,
+          _raw: item,
+        };
+      });
+      for (const apiItem of apiItems) {
+        if (apiItem?._raw) {
+          await this.upsertHydratedApiPlayer(apiItem._raw);
+        }
+      }
+    }
 
     const mergedByApiId = new Map<number, any>();
     for (const item of [...apiItems, ...dbItems]) {
@@ -254,7 +335,7 @@ export class FootballService {
 
     items.sort((a, b) => this.computeImportanceScore(b) - this.computeImportanceScore(a));
 
-    return {
+    const result = {
       items: items.slice(0, 20).map((item) => ({
         apiId: item.apiId,
         name: item.name,
@@ -265,6 +346,8 @@ export class FootballService {
         allowedPositions: item.allowedPositions,
       })),
     };
+    await this.redis.setJson(cacheKey, result, SEARCH_NORMALIZED_CACHE_TTL);
+    return result;
   }
 
   async getPlayerByApiId(apiId: number, season?: number) {

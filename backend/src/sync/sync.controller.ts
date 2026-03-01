@@ -37,6 +37,11 @@ export class SyncController {
     return this.syncService.enqueueGuarantee(season ? Number(season) : undefined);
   }
 
+  @Post('preload')
+  syncPreload(@Query('season') season?: string) {
+    return this.syncService.enqueuePreload(season ? Number(season) : undefined);
+  }
+
   @Get('coverage')
   coverage() {
     return this.syncService.getCoverage();

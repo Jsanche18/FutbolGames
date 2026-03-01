@@ -13,6 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "sync:preload": "node tools/trigger-preload.js 2025",
+    "smoke": "node tools/smoke-check.js",
     "postinstall": "prisma generate"
   },
   "dependencies": {
