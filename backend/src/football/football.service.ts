@@ -5,14 +5,24 @@ import { ApiFootballClient } from './api-football.client';
 import { ApiFootballTrophyProvider } from './trophy.provider';
 import { mapAllowedPositions } from './positions';
 import { ConfigService } from '@nestjs/config';
-import { getImportantPlayersMap } from '../common/important-players.catalog';
+import {
+  IMPORTANT_PLAYERS_CATALOG,
+  getImportantPlayersMap,
+  normalizeImportantName,
+} from '../common/important-players.catalog';
 
 const CACHE_TTL = 60 * 60;
-const IMPORTANT_NAME_KEYS = [...getImportantPlayersMap().keys()];
-const IMPORTANT_NAME_TOKENS = IMPORTANT_NAME_KEYS.map((key) => key.split(' ').filter(Boolean));
+const IMPORTANT_SEED_ENTRIES = IMPORTANT_PLAYERS_CATALOG.map((entry) => ({
+  ...entry,
+  normalizedName: normalizeImportantName(entry.name),
+  normalizedClub: normalizeImportantName(entry.club),
+}));
+const IMPORTANT_HYDRATE_CACHE_TTL_MS = 1000 * 60 * 30;
 
 @Injectable()
 export class FootballService {
+  private importantHydrateCache = new Map<string, { item: any; expiresAt: number }>();
+
   constructor(
     private prisma: PrismaService,
     private redis: RedisService,
@@ -116,6 +126,7 @@ export class FootballService {
     importantOnly?: boolean,
   ) {
     const correctedQuery = this.correctQuery(q);
+    const resolvedSeason = season ?? this.getDefaultSeason();
     const shouldCallApi = Boolean(correctedQuery || teamApiId || leagueApiId);
     let apiItems: any[] = [];
     if (shouldCallApi) {
@@ -226,7 +237,15 @@ export class FootballService {
       );
     }
     if (importantOnly) {
-      items = items.filter((item) => this.isCatalogImportant(item.name));
+      items = items.filter((item) => this.isCatalogImportant(item.name, item.teamName));
+      items = await this.hydrateImportantResults(items, {
+        query: correctedQuery,
+        season: resolvedSeason,
+        teamApiId,
+        leagueApiId,
+        nationality,
+        position,
+      });
     }
 
     items.sort((a, b) => this.computeImportanceScore(b) - this.computeImportanceScore(a));
@@ -297,40 +316,41 @@ export class FootballService {
     const goals = Number(item?.goals || 0) || 0;
     const assists = Number(item?.assists || 0) || 0;
     const minutes = Number(item?.minutes || 0) || 0;
-    const starBonus = this.isCatalogImportant(item?.name) ? 100 : 0;
+    const starBonus = this.isCatalogImportant(item?.name, item?.teamName) ? 100 : 0;
     return starBonus + rating * 12 + goals * 4 + assists * 3 + minutes / 120;
   }
 
-  private isCatalogImportant(name?: string) {
+  private isCatalogImportant(name?: string, teamName?: string) {
     const normalized = this.normalizeText(name || '');
     if (!normalized) return false;
+    const normalizedTeam = this.normalizeText(teamName || '');
+
     if (getImportantPlayersMap().has(normalized)) {
-      return true;
+      if (!normalizedTeam) return true;
+      const seeds = IMPORTANT_SEED_ENTRIES.filter((seed) => seed.normalizedName === normalized);
+      if (seeds.length === 0) return true;
+      return seeds.some((seed) => this.matchesClub(normalizedTeam, seed.normalizedClub));
     }
 
-    const nameTokens = normalized.split(' ').filter(Boolean);
-    if (nameTokens.length === 0) {
+    let bestScore = -1;
+    let bestClub = '';
+    for (const seed of IMPORTANT_SEED_ENTRIES) {
+      const score = this.scoreImportantNameCandidate(normalized, seed.normalizedName);
+      if (score > bestScore) {
+        bestScore = score;
+        bestClub = seed.normalizedClub;
+      }
+    }
+
+    if (bestScore < 4) {
       return false;
     }
 
-    for (const importantTokens of IMPORTANT_NAME_TOKENS) {
-      if (importantTokens.length === 0) {
-        continue;
-      }
-      if (importantTokens.length === 1) {
-        // Single-word important names (e.g. Rodri) must match a full token.
-        if (nameTokens.includes(importantTokens[0])) {
-          return true;
-        }
-        continue;
-      }
-      const allTokensPresent = importantTokens.every((token) => nameTokens.includes(token));
-      if (allTokensPresent) {
-        return true;
-      }
+    if (!normalizedTeam) {
+      return bestScore >= 5;
     }
 
-    return false;
+    return this.matchesClub(normalizedTeam, bestClub);
   }
 
   private matchesQuery(item: any, normalizedQuery: string) {
@@ -356,5 +376,247 @@ export class FootballService {
       return true;
     }
     return false;
+  }
+
+  private scoreImportantNameCandidate(normalizedName: string, normalizedSeedName: string) {
+    if (!normalizedName || !normalizedSeedName) return 0;
+    if (normalizedName === normalizedSeedName) return 6;
+    if (normalizedName.startsWith(`${normalizedSeedName} `)) return 5;
+    if (normalizedSeedName.startsWith(`${normalizedName} `)) return 2;
+    return 0;
+  }
+
+  private matchesClub(normalizedTeamName: string, normalizedSeedClub: string) {
+    if (!normalizedTeamName || !normalizedSeedClub) return false;
+    return (
+      normalizedTeamName === normalizedSeedClub ||
+      normalizedTeamName.includes(normalizedSeedClub) ||
+      normalizedSeedClub.includes(normalizedTeamName)
+    );
+  }
+
+  private async hydrateImportantResults(
+    currentItems: any[],
+    params: {
+      query?: string;
+      season: number;
+      teamApiId?: number;
+      leagueApiId?: number;
+      nationality?: string;
+      position?: string;
+    },
+  ) {
+    const mergedByApiId = new Map<number, any>();
+    for (const item of currentItems) {
+      if (item?.apiId) {
+        mergedByApiId.set(item.apiId, item);
+      }
+    }
+
+    if (mergedByApiId.size >= 20) {
+      return [...mergedByApiId.values()];
+    }
+
+    const normalizedQuery = this.normalizeText(params.query || '');
+    const candidateSeeds = IMPORTANT_SEED_ENTRIES
+      .filter((seed) => {
+        if (!normalizedQuery) return true;
+        return (
+          seed.normalizedName.includes(normalizedQuery) ||
+          normalizedQuery.includes(seed.normalizedName)
+        );
+      })
+      .sort((a, b) => Number(b.marketValueM || 0) - Number(a.marketValueM || 0))
+      .slice(0, normalizedQuery ? 40 : 25);
+
+    let apiCalls = 0;
+    for (const seed of candidateSeeds) {
+      if (mergedByApiId.size >= 30) break;
+      const alreadyPresent = [...mergedByApiId.values()].some((item) =>
+        this.isSameImportantSeed(item, seed.normalizedName, seed.normalizedClub),
+      );
+      if (alreadyPresent) continue;
+
+      const dbItem = await this.findImportantInDb(seed, params);
+      if (dbItem) {
+        mergedByApiId.set(dbItem.apiId, dbItem);
+        continue;
+      }
+
+      if (apiCalls >= 8) continue;
+      const hydrated = await this.fetchImportantFromApi(seed, params.season);
+      apiCalls += 1;
+      if (!hydrated) continue;
+      if (!this.applyPlayerFilters(hydrated, params)) continue;
+      mergedByApiId.set(hydrated.apiId, hydrated);
+    }
+
+    return [...mergedByApiId.values()];
+  }
+
+  private isSameImportantSeed(item: any, seedName: string, seedClub: string) {
+    const normalizedName = this.normalizeText(item?.name || '');
+    const normalizedClub = this.normalizeText(item?.teamName || '');
+    return (
+      this.scoreImportantNameCandidate(normalizedName, seedName) >= 5 &&
+      (!normalizedClub || this.matchesClub(normalizedClub, seedClub))
+    );
+  }
+
+  private async findImportantInDb(
+    seed: { normalizedName: string; normalizedClub: string; name: string },
+    params: {
+      teamApiId?: number;
+      leagueApiId?: number;
+      nationality?: string;
+      position?: string;
+    },
+  ) {
+    const firstToken = seed.normalizedName.split(' ')[0] || seed.normalizedName;
+    const dbPlayers = await this.prisma.player.findMany({
+      where: {
+        ...(firstToken ? { name: { contains: firstToken, mode: 'insensitive' } } : {}),
+      },
+      include: { team: true, stats: true },
+      take: 30,
+    });
+    const mapped = dbPlayers
+      .map((player) => {
+        const bestStat = (player.stats || []).reduce((acc, curr) => {
+          const accMinutes = Number(acc?.minutes || 0) || 0;
+          const currMinutes = Number(curr?.minutes || 0) || 0;
+          return currMinutes > accMinutes ? curr : acc;
+        }, null as any);
+        return {
+          apiId: player.apiId,
+          name: this.buildPlayerName(player.name, player.firstname ?? undefined, player.lastname ?? undefined),
+          photoUrl: player.photoUrl ?? undefined,
+          nationality: player.nationality ?? undefined,
+          teamApiId: player.teamApiId ?? undefined,
+          leagueApiId: player.leagueApiId ?? undefined,
+          teamName: player.team?.name ?? undefined,
+          primaryPosition: player.position ?? undefined,
+          allowedPositions: mapAllowedPositions(player.position),
+          goals: Number(bestStat?.goals || 0) || 0,
+          assists: Number(bestStat?.assists || 0) || 0,
+          minutes: Number(bestStat?.minutes || 0) || 0,
+          rating: Number(bestStat?.rating || 0) || 0,
+        };
+      })
+      .filter((item) => this.isSameImportantSeed(item, seed.normalizedName, seed.normalizedClub))
+      .filter((item) => this.applyPlayerFilters(item, params));
+
+    return mapped[0] || null;
+  }
+
+  private async fetchImportantFromApi(
+    seed: { normalizedName: string; normalizedClub: string; name: string },
+    season: number,
+  ) {
+    const cacheKey = `${seed.normalizedName}:${season}`;
+    const now = Date.now();
+    const cached = this.importantHydrateCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.item;
+    }
+
+    try {
+      const data = await this.api.getPlayers({
+        search: seed.name,
+        season,
+        page: 1,
+      });
+      const response = (data as any)?.response || [];
+      const candidates = response.map((entry: any) => {
+        const player = entry?.player || {};
+        const stats = entry?.statistics?.[0] || {};
+        return {
+          apiId: player?.id,
+          name: this.buildPlayerName(player?.name, player?.firstname, player?.lastname),
+          photoUrl: player?.photo,
+          nationality: player?.nationality,
+          teamApiId: stats?.team?.id,
+          leagueApiId: stats?.league?.id,
+          teamName: stats?.team?.name,
+          primaryPosition: stats?.games?.position || player?.position || '',
+          allowedPositions: mapAllowedPositions(stats?.games?.position || player?.position || ''),
+          goals: Number(stats?.goals?.total || 0) || 0,
+          assists: Number(stats?.goals?.assists || 0) || 0,
+          minutes: Number(stats?.games?.minutes || 0) || 0,
+          rating: Number(stats?.games?.rating || 0) || 0,
+          _raw: entry,
+        };
+      });
+      const best = candidates
+        .filter((item: any) => this.isSameImportantSeed(item, seed.normalizedName, seed.normalizedClub))
+        .sort((a: any, b: any) => this.computeImportanceScore(b) - this.computeImportanceScore(a))[0];
+      if (best?.apiId) {
+        this.importantHydrateCache.set(cacheKey, {
+          item: best,
+          expiresAt: now + IMPORTANT_HYDRATE_CACHE_TTL_MS,
+        });
+        await this.upsertHydratedApiPlayer(best._raw);
+        return best;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  private applyPlayerFilters(
+    item: any,
+    params: {
+      teamApiId?: number;
+      leagueApiId?: number;
+      nationality?: string;
+      position?: string;
+    },
+  ) {
+    if (params.teamApiId && Number(item?.teamApiId) !== params.teamApiId) return false;
+    if (params.leagueApiId && Number(item?.leagueApiId) !== params.leagueApiId) return false;
+    if (params.nationality) {
+      const normalizedNationality = this.normalizeText(params.nationality);
+      if (!this.normalizeText(String(item?.nationality || '')).includes(normalizedNationality)) return false;
+    }
+    if (params.position) {
+      const normalizedPosition = this.normalizeText(params.position);
+      if (!this.normalizeText(String(item?.primaryPosition || '')).includes(normalizedPosition)) return false;
+    }
+    return true;
+  }
+
+  private async upsertHydratedApiPlayer(rawItem: any) {
+    const player = rawItem?.player;
+    const stats = rawItem?.statistics?.[0] || {};
+    if (!player?.id) return;
+    await this.prisma.player.upsert({
+      where: { apiId: player.id },
+      update: {
+        name: this.buildPlayerName(player?.name, player?.firstname, player?.lastname),
+        firstname: player?.firstname,
+        lastname: player?.lastname,
+        age: player?.age,
+        nationality: player?.nationality,
+        photoUrl: player?.photo,
+        position: stats?.games?.position || player?.position,
+        teamApiId: stats?.team?.id,
+        leagueApiId: stats?.league?.id,
+        season: stats?.league?.season,
+      },
+      create: {
+        apiId: player.id,
+        name: this.buildPlayerName(player?.name, player?.firstname, player?.lastname),
+        firstname: player?.firstname,
+        lastname: player?.lastname,
+        age: player?.age,
+        nationality: player?.nationality,
+        photoUrl: player?.photo,
+        position: stats?.games?.position || player?.position,
+        teamApiId: stats?.team?.id,
+        leagueApiId: stats?.league?.id,
+        season: stats?.league?.season,
+      },
+    });
   }
 }
