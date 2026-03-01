@@ -5,7 +5,7 @@ import { ApiFootballClient } from './api-football.client';
 import { ApiFootballTrophyProvider } from './trophy.provider';
 import { mapAllowedPositions } from './positions';
 import { ConfigService } from '@nestjs/config';
-import { getImportantPlayersMap, IMPORTANT_PLAYERS_CATALOG } from '../common/important-players.catalog';
+import { getImportantPlayersMap } from '../common/important-players.catalog';
 
 const CACHE_TTL = 60 * 60;
 
@@ -114,36 +114,41 @@ export class FootballService {
     importantOnly?: boolean,
   ) {
     const correctedQuery = this.correctQuery(q);
-    const data = await this.searchPlayers(correctedQuery, teamApiId, leagueApiId, season, page);
-    let response = (data as any)?.response || [];
-    if (response.length === 0 && correctedQuery !== q) {
-      const fallbackData = await this.searchPlayers(q, teamApiId, leagueApiId, season, page);
-      response = (fallbackData as any)?.response || [];
+    const shouldCallApi = Boolean(correctedQuery || teamApiId || leagueApiId);
+    let apiItems: any[] = [];
+    if (shouldCallApi) {
+      const data = await this.searchPlayers(correctedQuery, teamApiId, leagueApiId, season, page);
+      let response = (data as any)?.response || [];
+      if (response.length === 0 && correctedQuery !== q) {
+        const fallbackData = await this.searchPlayers(q, teamApiId, leagueApiId, season, page);
+        response = (fallbackData as any)?.response || [];
+      }
+      apiItems = response.map((item: any) => {
+        const player = item.player || {};
+        const stats = item.statistics?.[0] || {};
+        const primaryPosition = stats?.games?.position || player.position || '';
+        const rating = Number(stats?.games?.rating || 0) || 0;
+        const minutes = Number(stats?.games?.minutes || 0) || 0;
+        const goals = Number(stats?.goals?.total || 0) || 0;
+        const assists = Number(stats?.goals?.assists || 0) || 0;
+        return {
+          apiId: player.id,
+          name: this.buildPlayerName(player.name, player.firstname, player.lastname),
+          photoUrl: player.photo,
+          nationality: player.nationality,
+          teamApiId: stats?.team?.id,
+          leagueApiId: stats?.league?.id,
+          teamName: stats?.team?.name,
+          primaryPosition,
+          allowedPositions: mapAllowedPositions(primaryPosition),
+          goals,
+          assists,
+          minutes,
+          rating,
+        };
+      });
     }
-    const apiItems = response.map((item: any) => {
-      const player = item.player || {};
-      const stats = item.statistics?.[0] || {};
-      const primaryPosition = stats?.games?.position || player.position || '';
-      const rating = Number(stats?.games?.rating || 0) || 0;
-      const minutes = Number(stats?.games?.minutes || 0) || 0;
-      const goals = Number(stats?.goals?.total || 0) || 0;
-      const assists = Number(stats?.goals?.assists || 0) || 0;
-      return {
-        apiId: player.id,
-        name: this.buildPlayerName(player.name, player.firstname, player.lastname),
-        photoUrl: player.photo,
-        nationality: player.nationality,
-        teamApiId: stats?.team?.id,
-        leagueApiId: stats?.league?.id,
-        teamName: stats?.team?.name,
-        primaryPosition,
-        allowedPositions: mapAllowedPositions(primaryPosition),
-        goals,
-        assists,
-        minutes,
-        rating,
-      };
-    });
+
     const dbPlayers = await this.prisma.player.findMany({
       where: {
         ...(correctedQuery
@@ -161,7 +166,7 @@ export class FootballService {
         ...(position ? { position: { contains: position, mode: 'insensitive' } } : {}),
       },
       include: { team: true, stats: true },
-      take: 50,
+      take: importantOnly ? 200 : 50,
     });
 
     const dbItems = dbPlayers.map((player) => {
@@ -219,7 +224,7 @@ export class FootballService {
       );
     }
     if (importantOnly) {
-      items = items.filter((item) => this.isImportantPlayer(item));
+      items = items.filter((item) => this.isCatalogImportant(item.name));
     }
 
     items.sort((a, b) => this.computeImportanceScore(b) - this.computeImportanceScore(a));
@@ -290,34 +295,21 @@ export class FootballService {
     const goals = Number(item?.goals || 0) || 0;
     const assists = Number(item?.assists || 0) || 0;
     const minutes = Number(item?.minutes || 0) || 0;
-    const starBonus = this.isStarByName(item?.name) ? 100 : 0;
+    const starBonus = this.isCatalogImportant(item?.name) ? 100 : 0;
     return starBonus + rating * 12 + goals * 4 + assists * 3 + minutes / 120;
   }
 
-  private isImportantPlayer(item: any) {
-    if (!item) return false;
-    if (this.isStarByName(item.name)) return true;
-    const rating = Number(item.rating || 0) || 0;
-    const goals = Number(item.goals || 0) || 0;
-    const assists = Number(item.assists || 0) || 0;
-    const minutes = Number(item.minutes || 0) || 0;
-    return rating >= 7.2 || goals >= 10 || assists >= 8 || minutes >= 1400;
-  }
-
-  private isStarByName(name?: string) {
+  private isCatalogImportant(name?: string) {
     const normalized = this.normalizeText(name || '');
+    if (!normalized) return false;
     if (getImportantPlayersMap().has(normalized)) return true;
-    for (const seed of IMPORTANT_PLAYERS_CATALOG) {
-      const seedName = this.normalizeText(seed.name);
-      if (normalized === seedName) return true;
-      if (normalized.length >= 4 && (seedName.includes(normalized) || normalized.includes(seedName))) {
-        return true;
-      }
-      const seedTokens = seedName.split(' ').filter(Boolean);
-      const lastSeedToken = seedTokens[seedTokens.length - 1];
-      if (lastSeedToken && normalized === lastSeedToken) {
-        return true;
-      }
+    const normalizedTokens = normalized.split(' ').filter(Boolean);
+    const normalizedLast = normalizedTokens[normalizedTokens.length - 1];
+    for (const key of getImportantPlayersMap().keys()) {
+      if (key.includes(normalized) || normalized.includes(key)) return true;
+      const keyTokens = key.split(' ').filter(Boolean);
+      const keyLast = keyTokens[keyTokens.length - 1];
+      if (normalizedLast && keyLast && normalizedLast === keyLast) return true;
     }
     return false;
   }
