@@ -32,8 +32,21 @@ export class SyncController {
     return this.syncService.enqueueBootstrap(season ? Number(season) : undefined);
   }
 
+  @Post('guarantee')
+  syncGuarantee(@Query('season') season?: string) {
+    return this.syncService.enqueueGuarantee(season ? Number(season) : undefined);
+  }
+
   @Get('coverage')
   coverage() {
     return this.syncService.getCoverage();
+  }
+
+  @Get('important-coverage')
+  importantCoverage(@Query('season') season?: string, @Query('repair') repair?: string) {
+    return this.syncService.getImportantCoverage(
+      season ? Number(season) : undefined,
+      repair === 'true',
+    );
   }
 }

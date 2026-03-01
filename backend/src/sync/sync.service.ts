@@ -36,6 +36,8 @@ export class SyncService implements OnModuleInit {
             return this.handleLeaguePlayers(job.data.leagueApiId, job.data.season);
           case 'sync-bootstrap':
             return this.handleBootstrap(job.data.season);
+          case 'sync-guarantee':
+            return this.handleGuarantee(job.data.season);
           default:
             return null;
         }
@@ -66,6 +68,10 @@ export class SyncService implements OnModuleInit {
 
   enqueueBootstrap(season?: number) {
     return this.queue.add('sync-bootstrap', { season });
+  }
+
+  enqueueGuarantee(season?: number) {
+    return this.queue.add('sync-guarantee', { season });
   }
 
   async getCoverage() {
@@ -104,6 +110,22 @@ export class SyncService implements OnModuleInit {
     };
   }
 
+  async getImportantCoverage(season?: number, repair = false) {
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const missingBefore = await this.findMissingImportantPlayers();
+    if (repair && missingBefore.length > 0) {
+      await this.repairImportantPlayers(missingBefore, resolvedSeason);
+    }
+    const missingAfter = await this.findMissingImportantPlayers();
+    return {
+      season: resolvedSeason,
+      totalImportant: this.getImportantPlayersList().length,
+      missingBefore: missingBefore.length,
+      missingAfter: missingAfter.length,
+      missingPlayers: missingAfter,
+    };
+  }
+
   private async handleLeagues(season?: number) {
     await this.throttle();
     const data = await this.api.getLeagues({ season });
@@ -137,72 +159,7 @@ export class SyncService implements OnModuleInit {
   private async handlePlayers(teamApiId: number, season?: number) {
     const response = await this.fetchAllPlayers(teamApiId, season);
     for (const item of response) {
-      const player = item.player;
-      const statistics = (item.statistics || []) as any[];
-      const preferredStats =
-        statistics.find((entry) => entry?.team?.id === teamApiId) ||
-        statistics.find((entry) => entry?.games?.position) ||
-        statistics[0];
-      const fullName = this.buildPlayerName(player?.name, player?.firstname, player?.lastname);
-      await this.prisma.player.upsert({
-        where: { apiId: player.id },
-        update: {
-          name: fullName,
-          firstname: player.firstname,
-          lastname: player.lastname,
-          age: player.age,
-          nationality: player.nationality,
-          photoUrl: player.photo,
-          position: preferredStats?.games?.position,
-          teamApiId: preferredStats?.team?.id,
-          leagueApiId: preferredStats?.league?.id,
-          season: preferredStats?.league?.season,
-        },
-        create: {
-          apiId: player.id,
-          name: fullName,
-          firstname: player.firstname,
-          lastname: player.lastname,
-          age: player.age,
-          nationality: player.nationality,
-          photoUrl: player.photo,
-          position: preferredStats?.games?.position,
-          teamApiId: preferredStats?.team?.id,
-          leagueApiId: preferredStats?.league?.id,
-          season: preferredStats?.league?.season,
-        },
-      });
-      for (const stats of statistics) {
-        if (!stats?.league?.id || !stats?.team?.id) continue;
-        await this.prisma.playerStat.upsert({
-          where: {
-            playerApiId_leagueApiId_season_teamApiId: {
-              playerApiId: player.id,
-              leagueApiId: stats.league?.id || 0,
-              season: stats.league?.season || 0,
-              teamApiId: stats.team?.id || 0,
-            },
-          },
-          update: {
-            appearances: stats.games?.appearances ?? stats.games?.appearences,
-            goals: stats.goals?.total,
-            assists: stats.goals?.assists,
-            minutes: stats.games?.minutes,
-            rating: stats.games?.rating,
-          },
-          create: {
-            playerApiId: player.id,
-            season: stats.league?.season,
-            leagueApiId: stats.league?.id,
-            teamApiId: stats.team?.id,
-            appearances: stats.games?.appearances ?? stats.games?.appearences,
-            goals: stats.goals?.total,
-            assists: stats.goals?.assists,
-            minutes: stats.games?.minutes,
-            rating: stats.games?.rating,
-          },
-        });
-      }
+      await this.upsertPlayerFromApiItem(item, teamApiId);
     }
   }
 
@@ -212,36 +169,7 @@ export class SyncService implements OnModuleInit {
     const response = (data as any)?.response || [];
     const item = response[0];
     if (!item) return;
-    const player = item.player;
-    const stats = item.statistics?.[0];
-    await this.prisma.player.upsert({
-      where: { apiId: player.id },
-      update: {
-        name: player.name,
-        firstname: player.firstname,
-        lastname: player.lastname,
-        age: player.age,
-        nationality: player.nationality,
-        photoUrl: player.photo,
-        position: stats?.games?.position,
-        teamApiId: stats?.team?.id,
-        leagueApiId: stats?.league?.id,
-        season: stats?.league?.season,
-      },
-      create: {
-        apiId: player.id,
-        name: player.name,
-        firstname: player.firstname,
-        lastname: player.lastname,
-        age: player.age,
-        nationality: player.nationality,
-        photoUrl: player.photo,
-        position: stats?.games?.position,
-        teamApiId: stats?.team?.id,
-        leagueApiId: stats?.league?.id,
-        season: stats?.league?.season,
-      },
-    });
+    await this.upsertPlayerFromApiItem(item);
   }
 
   private async handleLeaguePlayers(leagueApiId: number, season?: number) {
@@ -293,6 +221,44 @@ export class SyncService implements OnModuleInit {
     }
   }
 
+  private async handleGuarantee(season?: number) {
+    const resolvedSeason = season ?? this.getDefaultSeason();
+    const leagueIds = [...this.getBootstrapLeagueIds()];
+    const leagueResults = [];
+
+    for (const leagueApiId of leagueIds) {
+      try {
+        const teamApiIds = await this.handleTeams(leagueApiId, resolvedSeason);
+        for (const teamApiId of teamApiIds) {
+          await this.handlePlayers(teamApiId, resolvedSeason);
+        }
+        const players = await this.prisma.player.count({ where: { leagueApiId } });
+        const stats = await this.prisma.playerStat.count({ where: { leagueApiId } });
+        leagueResults.push({ leagueApiId, ok: true, teams: teamApiIds.length, players, stats });
+      } catch (error: any) {
+        leagueResults.push({
+          leagueApiId,
+          ok: false,
+          error: error?.message || 'sync failed',
+        });
+      }
+    }
+
+    const missingBefore = await this.findMissingImportantPlayers();
+    if (missingBefore.length > 0) {
+      await this.repairImportantPlayers(missingBefore, resolvedSeason);
+    }
+    const missingAfter = await this.findMissingImportantPlayers();
+
+    return {
+      season: resolvedSeason,
+      leagues: leagueResults,
+      importantMissingBefore: missingBefore.length,
+      importantMissingAfter: missingAfter.length,
+      importantMissingNames: missingAfter,
+    };
+  }
+
   private async fetchAllTeams(leagueApiId: number, season?: number) {
     const all: any[] = [];
     let page = 1;
@@ -321,6 +287,78 @@ export class SyncService implements OnModuleInit {
       page += 1;
     }
     return all;
+  }
+
+  private async upsertPlayerFromApiItem(item: any, preferredTeamApiId?: number) {
+    const player = item?.player;
+    if (!player?.id) return;
+    const statistics = (item?.statistics || []) as any[];
+    const preferredStats =
+      statistics.find((entry) => entry?.team?.id === preferredTeamApiId) ||
+      statistics.find((entry) => entry?.games?.position) ||
+      statistics[0];
+    const fullName = this.buildPlayerName(player?.name, player?.firstname, player?.lastname);
+
+    await this.prisma.player.upsert({
+      where: { apiId: player.id },
+      update: {
+        name: fullName,
+        firstname: player.firstname,
+        lastname: player.lastname,
+        age: player.age,
+        nationality: player.nationality,
+        photoUrl: player.photo,
+        position: preferredStats?.games?.position,
+        teamApiId: preferredStats?.team?.id,
+        leagueApiId: preferredStats?.league?.id,
+        season: preferredStats?.league?.season,
+      },
+      create: {
+        apiId: player.id,
+        name: fullName,
+        firstname: player.firstname,
+        lastname: player.lastname,
+        age: player.age,
+        nationality: player.nationality,
+        photoUrl: player.photo,
+        position: preferredStats?.games?.position,
+        teamApiId: preferredStats?.team?.id,
+        leagueApiId: preferredStats?.league?.id,
+        season: preferredStats?.league?.season,
+      },
+    });
+
+    for (const stats of statistics) {
+      if (!stats?.league?.id || !stats?.team?.id) continue;
+      await this.prisma.playerStat.upsert({
+        where: {
+          playerApiId_leagueApiId_season_teamApiId: {
+            playerApiId: player.id,
+            leagueApiId: stats.league?.id || 0,
+            season: stats.league?.season || 0,
+            teamApiId: stats.team?.id || 0,
+          },
+        },
+        update: {
+          appearances: stats.games?.appearances ?? stats.games?.appearences,
+          goals: stats.goals?.total,
+          assists: stats.goals?.assists,
+          minutes: stats.games?.minutes,
+          rating: stats.games?.rating,
+        },
+        create: {
+          playerApiId: player.id,
+          season: stats.league?.season,
+          leagueApiId: stats.league?.id,
+          teamApiId: stats.team?.id,
+          appearances: stats.games?.appearances ?? stats.games?.appearences,
+          goals: stats.goals?.total,
+          assists: stats.goals?.assists,
+          minutes: stats.games?.minutes,
+          rating: stats.games?.rating,
+        },
+      });
+    }
   }
 
   private getDefaultSeason() {
@@ -363,6 +401,56 @@ export class SyncService implements OnModuleInit {
     return new Set([140, 61, 307, 253, 128, 71, 39, 78, 135]);
   }
 
+  private getImportantPlayersList() {
+    return [
+      'Kylian Mbappe',
+      'Thibaut Courtois',
+      'Erling Haaland',
+      'Vinicius Junior',
+      'Jude Bellingham',
+      'Kevin De Bruyne',
+      'Harry Kane',
+      'Mohamed Salah',
+      'Rodri',
+      'Lautaro Martinez',
+      'Robert Lewandowski',
+      'Bukayo Saka',
+      'Pedri',
+      'Florian Wirtz',
+      'Jamal Musiala',
+      'Lionel Messi',
+      'Cristiano Ronaldo',
+      'Neymar',
+      'Antoine Griezmann',
+      'Federico Valverde',
+    ];
+  }
+
+  private async findMissingImportantPlayers() {
+    const players = await this.prisma.player.findMany({
+      select: { name: true, firstname: true, lastname: true },
+    });
+    const normalizedInDb = new Set(
+      players.map((player) =>
+        this.normalizeText(
+          this.buildPlayerName(player.name, player.firstname || undefined, player.lastname || undefined),
+        ),
+      ),
+    );
+    return this.getImportantPlayersList().filter((name) => !normalizedInDb.has(this.normalizeText(name)));
+  }
+
+  private async repairImportantPlayers(missingNames: string[], season: number) {
+    for (const name of missingNames) {
+      await this.throttle();
+      const data = await this.api.getPlayers({ search: name, season, page: 1 });
+      const response = (data as any)?.response || [];
+      for (const item of response) {
+        await this.upsertPlayerFromApiItem(item);
+      }
+    }
+  }
+
   private matchesLeague(name: string | undefined, country: string | undefined, allowed: string[]) {
     if (!name) return false;
     const normalizedName = name.toLowerCase();
@@ -393,6 +481,16 @@ export class SyncService implements OnModuleInit {
     if (first) return first;
     if (last) return last;
     return fallback;
+  }
+
+  private normalizeText(value: string) {
+    return (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\./g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private async throttle() {
