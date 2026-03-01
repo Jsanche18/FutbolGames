@@ -45,6 +45,9 @@ export class FootballController {
     @Query('leagueApiId') leagueApiId?: string,
     @Query('season') season?: string,
     @Query('page') page?: string,
+    @Query('nationality') nationality?: string,
+    @Query('position') position?: string,
+    @Query('importantOnly') importantOnly?: string,
   ) {
     return this.footballService.searchPlayersNormalized(
       q,
@@ -52,6 +55,9 @@ export class FootballController {
       leagueApiId ? Number(leagueApiId) : undefined,
       season ? Number(season) : undefined,
       page ? Number(page) : undefined,
+      nationality,
+      position,
+      importantOnly === 'true',
     );
   }
 

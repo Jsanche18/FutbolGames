@@ -121,19 +121,24 @@ export class GamesService {
     return { score, players };
   }
 
-  async hangmanStart(teamApiId?: number, leagueApiId?: number) {
+  async hangmanStart(teamApiId?: number, leagueApiId?: number, pool: 'important' | 'all' = 'important') {
     const candidates = await this.prisma.player.findMany({
       where: {
         ...(teamApiId ? { teamApiId } : {}),
         ...(leagueApiId ? { leagueApiId } : {}),
       },
-      take: 50,
+      include: { stats: true },
+      take: 600,
     });
-    if (candidates.length === 0) {
+    const filtered =
+      pool === 'important'
+        ? candidates.filter((player) => this.isImportantPlayer(player, player.stats || []))
+        : candidates;
+    if (filtered.length === 0) {
       await this.requestDataRefresh(teamApiId, leagueApiId);
       throw new NotFoundException('No players found. Sync queued, try again shortly.');
     }
-    const player = candidates[Math.floor(Math.random() * candidates.length)];
+    const player = filtered[Math.floor(Math.random() * filtered.length)];
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.HANGMAN, status: SessionStatus.ACTIVE },
     });
@@ -201,7 +206,13 @@ export class GamesService {
     };
   }
 
-  async sortStart(stat: 'goals' | 'assists' | 'appearances', leagueApiId?: number, teamApiId?: number, count = 5) {
+  async sortStart(
+    stat: 'goals' | 'assists' | 'appearances',
+    leagueApiId?: number,
+    teamApiId?: number,
+    count = 5,
+    pool: 'important' | 'all' = 'important',
+  ) {
     const stats = await this.prisma.playerStat.findMany({
       where: {
         ...(leagueApiId ? { leagueApiId } : {}),
@@ -211,19 +222,24 @@ export class GamesService {
         ...(stat === 'appearances' ? { appearances: { gt: 0 } } : {}),
       },
       include: { player: true },
-      take: 50,
+      take: 800,
     });
-    if (stats.length < Math.max(3, count)) {
+    const filteredStats =
+      pool === 'important'
+        ? stats.filter((entry) => this.isImportantPlayer(entry.player, [entry]))
+        : stats;
+    if (filteredStats.length < Math.max(3, count)) {
       await this.requestDataRefresh(teamApiId, leagueApiId);
       throw new NotFoundException('Not enough stats found. Sync queued, try again shortly.');
     }
-    const shuffled = stats.sort(() => 0.5 - Math.random()).slice(0, count);
+    const shuffled = filteredStats.sort(() => 0.5 - Math.random()).slice(0, count);
     const order = [...shuffled].sort((a, b) => (Number((b as any)[stat]) || 0) - (Number((a as any)[stat]) || 0));
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.SORT, status: SessionStatus.ACTIVE },
     });
     const payload = {
       stat,
+      pool,
       order: order.map((s) => s.player.apiId),
       values: Object.fromEntries(
         shuffled.map((s) => [String(s.player.apiId), Number((s as any)[stat]) || 0]),
@@ -306,6 +322,65 @@ export class GamesService {
     if (value.includes('mid')) return 'MID';
     if (value.includes('att') || value.includes('forw') || value.includes('strik')) return 'FWD';
     return null;
+  }
+
+  private isImportantPlayer(player: any, stats: any[]) {
+    if (!player) return false;
+    const fullName = this.normalizeText(
+      `${player.firstname || ''} ${player.lastname || ''}`.trim() || player.name || '',
+    );
+    if (this.getFeaturedPlayerNames().has(fullName)) {
+      return true;
+    }
+    const best = (stats || []).reduce(
+      (acc, curr) => {
+        const accScore = this.computeStatImportance(acc);
+        const currScore = this.computeStatImportance(curr);
+        return currScore > accScore ? curr : acc;
+      },
+      {} as any,
+    );
+    const score = this.computeStatImportance(best);
+    return score >= 25;
+  }
+
+  private computeStatImportance(stat: any) {
+    const rating = Number(stat?.rating || 0) || 0;
+    const goals = Number(stat?.goals || 0) || 0;
+    const assists = Number(stat?.assists || 0) || 0;
+    const appearances = Number(stat?.appearances || 0) || 0;
+    const minutes = Number(stat?.minutes || 0) || 0;
+    return rating * 4 + goals * 1.8 + assists * 1.5 + appearances * 0.5 + minutes / 180;
+  }
+
+  private getFeaturedPlayerNames() {
+    return new Set([
+      'kylian mbappe',
+      'thibaut courtois',
+      'erling haaland',
+      'vinicius junior',
+      'jude bellingham',
+      'kevin de bruyne',
+      'harry kane',
+      'mohamed salah',
+      'rodri',
+      'lautaro martinez',
+      'robert lewandowski',
+      'bukayo saka',
+      'pedri',
+      'florian wirtz',
+      'jamal musiala',
+    ]);
+  }
+
+  private normalizeText(value: string) {
+    return (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\./g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private async requestDataRefresh(teamApiId?: number, leagueApiId?: number) {

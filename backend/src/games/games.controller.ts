@@ -32,7 +32,7 @@ export class GamesController {
 
   @Post('hangman/start')
   hangmanStart(@Body() dto: HangmanStartDto) {
-    return this.gamesService.hangmanStart(dto.teamApiId, dto.leagueApiId);
+    return this.gamesService.hangmanStart(dto.teamApiId, dto.leagueApiId, dto.pool);
   }
 
   @Post('hangman/guess')
@@ -42,7 +42,7 @@ export class GamesController {
 
   @Post('sort/start')
   sortStart(@Body() dto: SortStartDto) {
-    return this.gamesService.sortStart(dto.stat, dto.leagueApiId, dto.teamApiId, dto.count);
+    return this.gamesService.sortStart(dto.stat, dto.leagueApiId, dto.teamApiId, dto.count, dto.pool);
   }
 
   @Get('sort/start')
@@ -51,12 +51,14 @@ export class GamesController {
     @Query('leagueApiId') leagueApiId?: string,
     @Query('teamApiId') teamApiId?: string,
     @Query('count') count?: string,
+    @Query('pool') pool?: 'important' | 'all',
   ) {
     return this.gamesService.sortStart(
       (stat || 'goals') as any,
       leagueApiId ? Number(leagueApiId) : undefined,
       teamApiId ? Number(teamApiId) : undefined,
       count ? Number(count) : undefined,
+      pool || 'important',
     );
   }
 

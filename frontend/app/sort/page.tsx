@@ -4,8 +4,23 @@ import { useState } from 'react';
 import { api } from '@/lib/api';
 import Panel from '@/components/Panel';
 
+const TOP_LEAGUES = [
+  { label: 'Todas las ligas', value: '' },
+  { label: 'España - La Liga', value: '140' },
+  { label: 'Francia - Ligue 1', value: '61' },
+  { label: 'Arabia Saudita - Pro League', value: '307' },
+  { label: 'EE.UU. - MLS', value: '253' },
+  { label: 'Argentina - Liga Profesional', value: '128' },
+  { label: 'Brasil - Serie A', value: '71' },
+  { label: 'Inglaterra - Premier League', value: '39' },
+  { label: 'Alemania - Bundesliga', value: '78' },
+  { label: 'Italia - Serie A', value: '135' },
+];
+
 export default function SortPage() {
   const [stat, setStat] = useState<'goals' | 'assists' | 'appearances'>('goals');
+  const [leagueApiId, setLeagueApiId] = useState<string>('');
+  const [pool, setPool] = useState<'important' | 'all'>('important');
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [players, setPlayers] = useState<any[]>([]);
   const [order, setOrder] = useState<any[]>([]);
@@ -15,7 +30,12 @@ export default function SortPage() {
 
   const start = async () => {
     try {
-      const res = await api.post('/games/sort/start', { stat, count: 5 });
+      const res = await api.post('/games/sort/start', {
+        stat,
+        count: 5,
+        pool,
+        ...(leagueApiId ? { leagueApiId: Number(leagueApiId) } : {}),
+      });
       setSessionId(res.data.sessionId);
       setPlayers(res.data.players);
       setOrder(res.data.players);
@@ -74,6 +94,25 @@ export default function SortPage() {
               <option value="goals">Goles</option>
               <option value="assists">Asistencias</option>
               <option value="appearances">Partidos</option>
+            </select>
+            <select
+              className="rounded-lg bg-black/40 px-4 py-2 text-clay"
+              value={leagueApiId}
+              onChange={(e) => setLeagueApiId(e.target.value)}
+            >
+              {TOP_LEAGUES.map((league) => (
+                <option key={league.label} value={league.value}>
+                  {league.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="rounded-lg bg-black/40 px-4 py-2 text-clay"
+              value={pool}
+              onChange={(e) => setPool(e.target.value as 'important' | 'all')}
+            >
+              <option value="important">Jugadores importantes</option>
+              <option value="all">Todos los jugadores</option>
             </select>
             <button className="rounded-full bg-lime px-6 py-2 text-ink" onClick={start}>
               Iniciar

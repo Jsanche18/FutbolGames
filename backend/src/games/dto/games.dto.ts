@@ -28,6 +28,10 @@ export class HangmanStartDto {
   @IsOptional()
   @IsNumber()
   leagueApiId?: number;
+
+  @IsOptional()
+  @IsString()
+  pool?: 'important' | 'all';
 }
 
 export class HangmanGuessDto {
@@ -53,6 +57,10 @@ export class SortStartDto {
   @IsOptional()
   @IsNumber()
   count?: number;
+
+  @IsOptional()
+  @IsString()
+  pool?: 'important' | 'all';
 }
 
 export class SortSubmitDto {
