@@ -139,12 +139,58 @@ export class GamesService {
         ...(leagueApiId ? { leagueApiId } : {}),
       },
       include: { stats: true, team: true },
-      take: 600,
+      take: pool === 'important' ? 3000 : 600,
     });
     const filtered =
       pool === 'important'
         ? candidates.filter((player) => this.isImportantPlayer(player, player.stats || []))
         : candidates;
+
+    if (filtered.length === 0 && pool === 'important') {
+      const statsFallback = await this.prisma.playerStat.findMany({
+        where: {
+          ...(leagueApiId ? { leagueApiId } : {}),
+          ...(teamApiId ? { teamApiId } : {}),
+          OR: [{ goals: { gt: 0 } }, { assists: { gt: 0 } }, { appearances: { gt: 0 } }, { minutes: { gt: 0 } }],
+        },
+        include: {
+          player: {
+            include: { team: true, stats: true },
+          },
+        },
+        take: 6000,
+      });
+      const fallbackPlayersByApiId = new Map<number, any>();
+      for (const entry of statsFallback) {
+        const player = entry.player;
+        if (!player?.apiId) continue;
+        if (!fallbackPlayersByApiId.has(player.apiId)) {
+          fallbackPlayersByApiId.set(player.apiId, player);
+        }
+      }
+      const fallbackFiltered = [...fallbackPlayersByApiId.values()].filter((player) =>
+        this.isImportantPlayer(player, player.stats || []),
+      );
+      if (fallbackFiltered.length > 0) {
+        const player = fallbackFiltered[Math.floor(Math.random() * fallbackFiltered.length)];
+        const session = await this.prisma.gameSession.create({
+          data: { gameType: GameType.HANGMAN, status: SessionStatus.ACTIVE },
+        });
+
+        const baseName = `${player?.firstname || ''} ${player?.lastname || ''}`.trim() || player?.name || '';
+        const secret = String(baseName).toLowerCase();
+        const masked = secret.replace(/[a-z]/g, '_');
+        const payload = {
+          secret,
+          masked,
+          attemptsLeft: 8,
+          guessed: [] as string[],
+        };
+        await this.redis.setJson(`hangman:${session.id}`, payload, HANGMAN_TTL);
+        return { sessionId: session.id, masked, attemptsLeft: 8 };
+      }
+    }
+
     if (filtered.length === 0) {
       await this.requestDataRefresh(teamApiId, leagueApiId);
       throw new NotFoundException('No players found. Sync queued, try again shortly.');
@@ -154,7 +200,8 @@ export class GamesService {
       data: { gameType: GameType.HANGMAN, status: SessionStatus.ACTIVE },
     });
 
-    const secret = player.name.toLowerCase();
+    const baseName = `${player?.firstname || ''} ${player?.lastname || ''}`.trim() || player?.name || '';
+    const secret = String(baseName).toLowerCase();
     const masked = secret.replace(/[a-z]/g, '_');
     const payload = {
       secret,
@@ -338,6 +385,71 @@ export class GamesService {
         }
         return true;
       });
+
+    if (candidates.length === 0 && pool === 'important') {
+      const statsFallback = await this.prisma.playerStat.findMany({
+        where: {
+          ...(leagueApiId ? { leagueApiId } : {}),
+          OR: [{ goals: { gt: 0 } }, { assists: { gt: 0 } }, { appearances: { gt: 0 } }, { minutes: { gt: 0 } }],
+        },
+        include: {
+          player: {
+            include: { team: true, stats: true },
+          },
+        },
+        take: 6000,
+      });
+
+      const playersByApiId = new Map<number, any>();
+      for (const entry of statsFallback) {
+        const player = entry.player;
+        if (!player?.apiId) continue;
+        if (!playersByApiId.has(player.apiId)) {
+          playersByApiId.set(player.apiId, player);
+        }
+      }
+
+      const fallbackCandidates = [...playersByApiId.values()]
+        .map((player) => {
+          const seed = this.findImportantSeedForPlayer(player);
+          const key = seed?.normalizedName;
+          const market = key ? importantMap.get(key) : undefined;
+          return {
+            player,
+            marketValueM: market?.marketValueM,
+            seedClub: market?.club || seed?.club,
+          };
+        })
+        .filter((row) => Number(row.marketValueM || 0) > 0);
+
+      if (fallbackCandidates.length > 0) {
+        const picked = fallbackCandidates[Math.floor(Math.random() * fallbackCandidates.length)];
+        const targetValueM = Number(picked.marketValueM);
+        const session = await this.prisma.gameSession.create({
+          data: { gameType: GameType.SORT, status: SessionStatus.ACTIVE },
+        });
+
+        await this.redis.setJson(
+          `market:${session.id}`,
+          {
+            playerApiId: picked.player.apiId,
+            targetValueM,
+          },
+          MARKET_TTL,
+        );
+
+        return {
+          sessionId: session.id,
+          player: {
+            apiId: picked.player.apiId,
+            name: picked.player.name,
+            photoUrl: picked.player.photoUrl,
+            teamName: picked.player.team?.name || picked.seedClub || 'Sin equipo',
+            leagueApiId: picked.player.leagueApiId,
+          },
+        };
+      }
+    }
 
     if (candidates.length === 0) {
       await this.requestDataRefresh(undefined, leagueApiId);

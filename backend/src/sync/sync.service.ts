@@ -16,6 +16,10 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
   private importantCandidatesCache = new Map<string, any[]>();
   private directRefreshTimer: NodeJS.Timeout | null = null;
   private autoPreloadInProgress = false;
+  private knownTeamApiIds = new Set<number>();
+  private missingTeamApiIds = new Set<number>();
+  private knownLeagueApiIds = new Set<number>();
+  private missingLeagueApiIds = new Set<number>();
 
   constructor(
     private redis: RedisService,
@@ -329,6 +333,13 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       logoUrl: item.league?.logo,
     })).filter((l: any) => l.apiId);
     await this.prisma.league.createMany({ data: leagues, skipDuplicates: true });
+    for (const league of leagues) {
+      const apiId = Number(league?.apiId);
+      if (Number.isFinite(apiId) && apiId > 0) {
+        this.knownLeagueApiIds.add(apiId);
+        this.missingLeagueApiIds.delete(apiId);
+      }
+    }
     return leagues.map((l: any) => l.apiId).filter(Boolean);
   }
 
@@ -344,6 +355,13 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       isNational: item.team?.national || false,
     })).filter((t: any) => t.apiId);
     await this.prisma.team.createMany({ data: teams, skipDuplicates: true });
+    for (const team of teams) {
+      const apiId = Number(team?.apiId);
+      if (Number.isFinite(apiId) && apiId > 0) {
+        this.knownTeamApiIds.add(apiId);
+        this.missingTeamApiIds.delete(apiId);
+      }
+    }
     return teams.map((t: any) => t.apiId).filter(Boolean);
   }
 
@@ -503,6 +521,12 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       statistics.find((entry) => entry?.team?.id === preferredTeamApiId) ||
       statistics.find((entry) => entry?.games?.position) ||
       statistics[0];
+    const resolvedTeamApiId = await this.resolveExistingTeamApiId(
+      preferredStats?.team?.id ?? preferredTeamApiId,
+    );
+    const resolvedLeagueApiId = await this.resolveExistingLeagueApiId(
+      preferredStats?.league?.id,
+    );
     const fullName = this.buildPlayerName(player?.name, player?.firstname, player?.lastname);
 
     await this.prisma.player.upsert({
@@ -515,8 +539,8 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         nationality: player.nationality,
         photoUrl: player.photo,
         position: preferredStats?.games?.position,
-        teamApiId: preferredStats?.team?.id,
-        leagueApiId: preferredStats?.league?.id,
+        teamApiId: resolvedTeamApiId,
+        leagueApiId: resolvedLeagueApiId,
         season: preferredStats?.league?.season,
       },
       create: {
@@ -528,8 +552,8 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         nationality: player.nationality,
         photoUrl: player.photo,
         position: preferredStats?.games?.position,
-        teamApiId: preferredStats?.team?.id,
-        leagueApiId: preferredStats?.league?.id,
+        teamApiId: resolvedTeamApiId,
+        leagueApiId: resolvedLeagueApiId,
         season: preferredStats?.league?.season,
       },
     });
@@ -923,5 +947,43 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
     const delayMs = raw ? Number(raw) : 1200;
     if (!delayMs || delayMs <= 0) return;
     await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  private async resolveExistingTeamApiId(rawTeamApiId: any) {
+    const teamApiId = Number(rawTeamApiId);
+    if (!Number.isFinite(teamApiId) || teamApiId <= 0) return null;
+    if (this.knownTeamApiIds.has(teamApiId)) return teamApiId;
+    if (this.missingTeamApiIds.has(teamApiId)) return null;
+
+    const team = await this.prisma.team.findUnique({
+      where: { apiId: teamApiId },
+      select: { apiId: true },
+    });
+    if (team?.apiId) {
+      this.knownTeamApiIds.add(teamApiId);
+      this.missingTeamApiIds.delete(teamApiId);
+      return teamApiId;
+    }
+    this.missingTeamApiIds.add(teamApiId);
+    return null;
+  }
+
+  private async resolveExistingLeagueApiId(rawLeagueApiId: any) {
+    const leagueApiId = Number(rawLeagueApiId);
+    if (!Number.isFinite(leagueApiId) || leagueApiId <= 0) return null;
+    if (this.knownLeagueApiIds.has(leagueApiId)) return leagueApiId;
+    if (this.missingLeagueApiIds.has(leagueApiId)) return null;
+
+    const league = await this.prisma.league.findUnique({
+      where: { apiId: leagueApiId },
+      select: { apiId: true },
+    });
+    if (league?.apiId) {
+      this.knownLeagueApiIds.add(leagueApiId);
+      this.missingLeagueApiIds.delete(leagueApiId);
+      return leagueApiId;
+    }
+    this.missingLeagueApiIds.add(leagueApiId);
+    return null;
   }
 }
