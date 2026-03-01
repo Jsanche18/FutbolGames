@@ -49,4 +49,9 @@ export class SyncController {
       repair === 'true',
     );
   }
+
+  @Post('important/sync')
+  syncImportant(@Query('season') season?: string) {
+    return this.syncService.syncImportantPlayers(season ? Number(season) : undefined);
+  }
 }
