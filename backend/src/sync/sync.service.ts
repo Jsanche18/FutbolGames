@@ -12,6 +12,7 @@ import {
 @Injectable()
 export class SyncService implements OnModuleInit {
   private queue!: Queue;
+  private importantCandidatesCache = new Map<string, any[]>();
 
   constructor(
     private redis: RedisService,
@@ -132,13 +133,12 @@ export class SyncService implements OnModuleInit {
 
   async syncImportantPlayers(season?: number) {
     const resolvedSeason = season ?? this.getDefaultSeason();
+    this.importantCandidatesCache.clear();
     const rows = [];
     for (const seed of IMPORTANT_PLAYERS_CATALOG) {
-      await this.throttle();
-      const data = await this.api.getPlayers({ search: seed.name, season: resolvedSeason, page: 1 });
-      const response = (data as any)?.response || [];
-      const match = this.pickBestPlayerMatch(response, seed.name, seed.club);
+      const match = await this.resolveImportantSeed(seed, resolvedSeason);
       if (match) {
+        this.applySeedIdentity(match, seed.name);
         await this.upsertPlayerFromApiItem(match);
         rows.push({
           name: seed.name,
@@ -467,21 +467,16 @@ export class SyncService implements OnModuleInit {
 
   private async repairImportantPlayers(missingNames: string[], season: number) {
     for (const name of missingNames) {
-      await this.throttle();
       const seed = IMPORTANT_PLAYERS_CATALOG.find(
         (item) => normalizeImportantName(item.name) === normalizeImportantName(name),
       );
-      const data = await this.api.getPlayers({ search: name, season, page: 1 });
-      const response = (data as any)?.response || [];
       if (seed) {
-        const match = this.pickBestPlayerMatch(response, seed.name, seed.club);
+        const match = await this.resolveImportantSeed(seed, season);
         if (match) {
+          this.applySeedIdentity(match, seed.name);
           await this.upsertPlayerFromApiItem(match);
           continue;
         }
-      }
-      for (const item of response.slice(0, 1)) {
-        await this.upsertPlayerFromApiItem(item);
       }
     }
   }
@@ -531,6 +526,8 @@ export class SyncService implements OnModuleInit {
   private pickBestPlayerMatch(candidates: any[], name: string, club: string) {
     const targetName = this.normalizeText(name);
     const targetClub = this.normalizeText(club);
+    const targetTokens = targetName.split(' ').filter(Boolean);
+    const targetLast = targetTokens[targetTokens.length - 1] || targetName;
     let best: any = null;
     let bestScore = -1;
     for (const candidate of candidates || []) {
@@ -540,9 +537,13 @@ export class SyncService implements OnModuleInit {
         this.buildPlayerName(player?.name, player?.firstname, player?.lastname),
       );
       const teamName = this.normalizeText(stats?.team?.name || '');
+      const playerTokens = playerName.split(' ').filter(Boolean);
+      const playerLast = playerTokens[playerTokens.length - 1] || playerName;
       let score = 0;
       if (playerName === targetName) score += 4;
       if (playerName.includes(targetName) || targetName.includes(playerName)) score += 2;
+      if (targetLast && playerLast === targetLast) score += 2;
+      if (targetTokens.length === 1 && playerName.includes(targetTokens[0])) score += 2;
       if (teamName === targetClub) score += 3;
       if (teamName.includes(targetClub) || targetClub.includes(teamName)) score += 1;
       if (score > bestScore) {
@@ -550,7 +551,211 @@ export class SyncService implements OnModuleInit {
         bestScore = score;
       }
     }
+    return bestScore >= 1 ? best : null;
+  }
+
+  private async resolveImportantSeed(
+    seed: { name: string; club: string },
+    season: number,
+  ): Promise<any | null> {
+    const dbCandidate = await this.resolveImportantFromDb(seed);
+    if (dbCandidate) {
+      return {
+        player: {
+          id: dbCandidate.apiId,
+          name: dbCandidate.name,
+          firstname: dbCandidate.firstname,
+          lastname: dbCandidate.lastname,
+          age: dbCandidate.age,
+          nationality: dbCandidate.nationality,
+          photo: dbCandidate.photoUrl,
+        },
+        statistics: [
+          {
+            team: { id: dbCandidate.teamApiId, name: dbCandidate.team?.name },
+            league: { id: dbCandidate.leagueApiId, season: dbCandidate.season },
+            games: { position: dbCandidate.position },
+            goals: {},
+          },
+        ],
+      };
+    }
+
+    const apiCandidates = await this.resolveImportantFromApiByTeam(seed.club, season, seed.name);
+    return this.pickBestPlayerMatch(apiCandidates, seed.name, seed.club);
+  }
+
+  private async resolveImportantFromDb(seed: { name: string; club: string }) {
+    const candidates = await this.prisma.player.findMany({
+      where: {
+        OR: [
+          { name: { contains: seed.name, mode: 'insensitive' } },
+          { firstname: { contains: seed.name.split(' ')[0], mode: 'insensitive' } },
+          { lastname: { contains: seed.name.split(' ').slice(-1)[0], mode: 'insensitive' } },
+        ],
+      },
+      include: { team: true },
+      take: 20,
+    });
+    const normalizedName = this.normalizeText(seed.name);
+    const normalizedClub = this.normalizeText(seed.club);
+    let best: any = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const fullName = this.normalizeText(
+        this.buildPlayerName(candidate.name, candidate.firstname || undefined, candidate.lastname || undefined),
+      );
+      const teamName = this.normalizeText(candidate.team?.name || '');
+      let score = 0;
+      if (fullName === normalizedName) score += 4;
+      if (fullName.includes(normalizedName) || normalizedName.includes(fullName)) score += 2;
+      if (teamName === normalizedClub) score += 3;
+      if (teamName.includes(normalizedClub) || normalizedClub.includes(teamName)) score += 1;
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
     return bestScore >= 2 ? best : null;
+  }
+
+  private async resolveImportantFromApiByTeam(club: string, season: number, playerName?: string) {
+    const cacheKey = `${this.normalizeText(club)}:${season}`;
+    const cached = this.importantCandidatesCache.get(cacheKey);
+    if (cached && cached.length > 0) {
+      return cached;
+    }
+
+    const config = this.getClubResolutionConfig(club);
+    const teams: any[] = [];
+    for (const term of config.terms) {
+      await this.throttle();
+      const teamsData = await this.api.getTeams({ search: term });
+      teams.push(...(((teamsData as any)?.response || []).map((entry: any) => ({ ...entry, __term: term }))));
+    }
+
+    const normalizedClub = this.normalizeText(club);
+    const selectedTeam = teams
+      .map((entry: any) => ({
+        apiId: entry?.team?.id,
+        name: entry?.team?.name || '',
+        country: entry?.team?.country || entry?.country?.name || '',
+      }))
+      .filter((team: any) => team.apiId)
+      .sort((a: any, b: any) => {
+        const aName = this.normalizeText(a.name);
+        const bName = this.normalizeText(b.name);
+        const aExact = this.getTeamNameScore(aName, normalizedClub);
+        const bExact = this.getTeamNameScore(bName, normalizedClub);
+        const aCountry = this.normalizeText(a.country);
+        const bCountry = this.normalizeText(b.country);
+        const expectedCountry = this.normalizeText(config.country || '');
+        const aCountryScore = expectedCountry && aCountry === expectedCountry ? 2 : 0;
+        const bCountryScore = expectedCountry && bCountry === expectedCountry ? 2 : 0;
+        return bCountryScore - aCountryScore || bExact - aExact;
+      })[0];
+
+    if (!selectedTeam?.apiId) return [];
+    const candidates = await this.fetchAllPlayers(selectedTeam.apiId, season);
+    if (candidates.length > 0) {
+      this.importantCandidatesCache.set(cacheKey, candidates);
+      return candidates;
+    }
+
+    if (playerName) {
+      const squadCandidates = await this.fetchSquadPlayers(selectedTeam.apiId, selectedTeam.name);
+      if (squadCandidates.length > 0) {
+        this.importantCandidatesCache.set(cacheKey, squadCandidates);
+      }
+      const filtered = squadCandidates
+        .filter((entry: any) => {
+          const fullName = this.normalizeText(entry?.player?.name || '');
+          const target = this.normalizeText(playerName);
+          return fullName === target || fullName.includes(target) || target.includes(fullName);
+        })
+        .slice(0, 5);
+      return filtered;
+    }
+    return [];
+  }
+
+  private getClubResolutionConfig(club: string) {
+    const key = this.normalizeText(club);
+    const map: Record<string, { terms: string[]; country?: string }> = {
+      'fc barcelona': { terms: ['Barcelona', 'FC Barcelona'], country: 'Spain' },
+      'real madrid': { terms: ['Real Madrid'], country: 'Spain' },
+      'athletic club': { terms: ['Athletic Club', 'Ath Bilbao'], country: 'Spain' },
+      'real sociedad': { terms: ['Real Sociedad'], country: 'Spain' },
+      'bayern munich': { terms: ['Bayern Munich', 'Bayern'], country: 'Germany' },
+      'borussia dortmund': { terms: ['Borussia Dortmund', 'Dortmund'], country: 'Germany' },
+      'bayer leverkusen': { terms: ['Bayer Leverkusen', 'Leverkusen'], country: 'Germany' },
+      inter: { terms: ['Inter', 'Inter Milan'], country: 'Italy' },
+      'ac milan': { terms: ['AC Milan', 'Milan'], country: 'Italy' },
+      juventus: { terms: ['Juventus'], country: 'Italy' },
+      napoli: { terms: ['Napoli'], country: 'Italy' },
+      roma: { terms: ['Roma'], country: 'Italy' },
+      bologna: { terms: ['Bologna'], country: 'Italy' },
+      psg: { terms: ['Paris Saint Germain', 'PSG', 'Paris'], country: 'France' },
+      marseille: { terms: ['Marseille'], country: 'France' },
+      lille: { terms: ['Lille'], country: 'France' },
+      lyon: { terms: ['Lyon'], country: 'France' },
+      'sporting cp': { terms: ['Sporting CP', 'Sporting'], country: 'Portugal' },
+      'fc porto': { terms: ['FC Porto', 'Porto'], country: 'Portugal' },
+      benfica: { terms: ['Benfica'], country: 'Portugal' },
+      'al-nassr': { terms: ['Nassr', 'Al Nassr', 'Al-Nassr'], country: 'Saudi-Arabia' },
+      'al-ittihad': { terms: ['Ittihad', 'Al Ittihad', 'Al-Ittihad'], country: 'Saudi-Arabia' },
+      'al-hilal': { terms: ['Hilal', 'Al Hilal', 'Al-Hilal'], country: 'Saudi-Arabia' },
+      'inter miami': { terms: ['Inter Miami', 'Inter Miami CF'], country: 'USA' },
+      'la galaxy': { terms: ['Los Angeles Galaxy', 'LA Galaxy', 'Galaxy'], country: 'USA' },
+      'toronto fc': { terms: ['Toronto FC', 'Toronto'], country: 'Canada' },
+    };
+    return map[key] || { terms: [club] };
+  }
+
+  private getTeamNameScore(teamName: string, normalizedClub: string) {
+    let score = 0;
+    if (teamName === normalizedClub) score += 4;
+    else if (teamName.includes(normalizedClub) || normalizedClub.includes(teamName)) score += 2;
+    if (teamName.includes(' women') || teamName.endsWith(' w')) score -= 5;
+    const youth = ['u17', 'u18', 'u19', 'u20', 'u21', 'u23', ' ii', ' iii', ' b'];
+    if (youth.some((token) => teamName.includes(token))) score -= 4;
+    return score;
+  }
+
+  private async fetchSquadPlayers(teamApiId: number, teamName?: string) {
+    await this.throttle();
+    const data = await this.api.getPlayersSquads({ team: teamApiId });
+    const response = (data as any)?.response || [];
+    const players = response?.[0]?.players || [];
+    return players.map((player: any) => ({
+      player: {
+        id: player?.id,
+        name: player?.name,
+        firstname: undefined,
+        lastname: undefined,
+        age: player?.age,
+        nationality: player?.nationality,
+        photo: player?.photo,
+      },
+      statistics: [
+        {
+          team: { id: teamApiId, name: teamName },
+          league: {},
+          games: {},
+          goals: {},
+        },
+      ],
+    }));
+  }
+
+  private applySeedIdentity(item: any, seedName: string) {
+    if (!item?.player) return;
+    const parts = seedName.split(' ').filter(Boolean);
+    const firstname = parts.slice(0, -1).join(' ');
+    const lastname = parts.slice(-1).join('');
+    item.player.name = seedName;
+    item.player.firstname = firstname || item.player.firstname;
+    item.player.lastname = lastname || item.player.lastname;
   }
 
   private async throttle() {
