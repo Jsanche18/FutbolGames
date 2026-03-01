@@ -22,6 +22,11 @@ const cards = [
     description: 'Duelo en tiempo real con pistas.',
     href: '/multiplayer',
   },
+  {
+    title: 'Market Value',
+    description: 'Adivina el valor de mercado del jugador.',
+    href: '/market',
+  },
 ];
 
 export default function HomePage() {
