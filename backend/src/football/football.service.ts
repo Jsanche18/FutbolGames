@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { getImportantPlayersMap } from '../common/important-players.catalog';
 
 const CACHE_TTL = 60 * 60;
+const IMPORTANT_NAME_KEYS = [...getImportantPlayersMap().keys()];
+const IMPORTANT_NAME_TOKENS = IMPORTANT_NAME_KEYS.map((key) => key.split(' ').filter(Boolean));
 
 @Injectable()
 export class FootballService {
@@ -302,30 +304,55 @@ export class FootballService {
   private isCatalogImportant(name?: string) {
     const normalized = this.normalizeText(name || '');
     if (!normalized) return false;
-    if (getImportantPlayersMap().has(normalized)) return true;
-    const normalizedTokens = normalized.split(' ').filter(Boolean);
-    const normalizedLast = normalizedTokens[normalizedTokens.length - 1];
-    for (const key of getImportantPlayersMap().keys()) {
-      if (key.includes(normalized) || normalized.includes(key)) return true;
-      const keyTokens = key.split(' ').filter(Boolean);
-      const keyLast = keyTokens[keyTokens.length - 1];
-      if (normalizedLast && keyLast && normalizedLast === keyLast) return true;
+    if (getImportantPlayersMap().has(normalized)) {
+      return true;
     }
+
+    const nameTokens = normalized.split(' ').filter(Boolean);
+    if (nameTokens.length === 0) {
+      return false;
+    }
+
+    for (const importantTokens of IMPORTANT_NAME_TOKENS) {
+      if (importantTokens.length === 0) {
+        continue;
+      }
+      if (importantTokens.length === 1) {
+        // Single-word important names (e.g. Rodri) must match a full token.
+        if (nameTokens.includes(importantTokens[0])) {
+          return true;
+        }
+        continue;
+      }
+      const allTokensPresent = importantTokens.every((token) => nameTokens.includes(token));
+      if (allTokensPresent) {
+        return true;
+      }
+    }
+
     return false;
   }
 
   private matchesQuery(item: any, normalizedQuery: string) {
     const baseName = this.normalizeText(item?.name || '');
-    if (baseName.includes(normalizedQuery)) return true;
-
-    const tokens = baseName.split(' ').filter(Boolean);
-    if (tokens.some((token) => token.includes(normalizedQuery) || normalizedQuery.includes(token))) {
+    if (baseName.includes(normalizedQuery)) {
       return true;
+    }
+
+    const queryTokens = normalizedQuery.split(' ').filter(Boolean);
+    if (queryTokens.length > 0) {
+      const baseTokens = baseName.split(' ').filter(Boolean);
+      const allTokensPresent = queryTokens.every((queryToken) =>
+        baseTokens.some((baseToken) => baseToken === queryToken || baseToken.startsWith(queryToken)),
+      );
+      if (allTokensPresent) {
+        return true;
+      }
     }
 
     const correctedFromQuery = this.correctQuery(normalizedQuery);
     const correctedNormalized = this.normalizeText(correctedFromQuery);
-    if (correctedNormalized && baseName.includes(correctedNormalized)) {
+    if (correctedNormalized && correctedNormalized !== normalizedQuery && baseName.includes(correctedNormalized)) {
       return true;
     }
     return false;
