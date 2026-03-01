@@ -8,6 +8,8 @@ import {
   HangmanGuessDto,
   SortStartDto,
   SortSubmitDto,
+  MarketStartDto,
+  MarketGuessDto,
 } from './dto/games.dto';
 
 @ApiTags('games')
@@ -65,5 +67,15 @@ export class GamesController {
   @Post('sort/submit')
   sortSubmit(@Body() dto: SortSubmitDto) {
     return this.gamesService.sortSubmit(dto.sessionId, dto.orderedPlayerApiIds);
+  }
+
+  @Post('market/start')
+  marketStart(@Body() dto: MarketStartDto) {
+    return this.gamesService.marketStart(dto.leagueApiId, dto.pool);
+  }
+
+  @Post('market/guess')
+  marketGuess(@Body() dto: MarketGuessDto) {
+    return this.gamesService.marketGuess(dto.sessionId, dto.guessValueM);
   }
 }
