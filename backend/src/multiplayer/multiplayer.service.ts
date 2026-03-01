@@ -23,6 +23,7 @@ type RoomState = {
   hintsSent: { key: string; value: any }[];
   roundResolved?: boolean;
   awaitingNextRound?: boolean;
+  recentSecretApiIds: number[];
   interval?: NodeJS.Timeout;
   roundTimeout?: NodeJS.Timeout;
 };
@@ -106,7 +107,9 @@ export class MultiplayerService {
     roundNumber: number,
     io: Server,
   ) {
-    const secret = await this.pickSecretPlayer();
+    const previousState = this.roomStates.get(code);
+    const previousRecent = previousState?.recentSecretApiIds || [];
+    const secret = await this.pickSecretPlayer(previousRecent);
     const round = await this.prisma.gameRound.create({
       data: {
         sessionId,
@@ -128,6 +131,7 @@ export class MultiplayerService {
       hintsSent: [],
       roundResolved: false,
       awaitingNextRound: false,
+      recentSecretApiIds: [secret.apiId, ...previousRecent].slice(0, 32),
     };
     this.roomStates.set(code, state);
 
@@ -162,7 +166,7 @@ export class MultiplayerService {
     });
 
     const normalized = guessText.toLowerCase().trim();
-    const correct = normalized === state.secretPlayer.name.toLowerCase();
+    const correct = this.matchesPlayerGuess(normalized, state.secretPlayer.name);
     if (!correct) {
       return { ok: true, correct: false };
     }
@@ -284,10 +288,35 @@ export class MultiplayerService {
     return;
   }
 
-  private async pickSecretPlayer() {
-    const players = await this.prisma.player.findMany({ take: 50 });
-    if (players.length === 0) throw new NotFoundException('No players available');
-    const player = players[Math.floor(Math.random() * players.length)];
+  private async pickSecretPlayer(recentSecretApiIds: number[]) {
+    const where = { stats: { some: {} } } as any;
+    const total = await this.prisma.player.count({ where });
+    if (total === 0) throw new NotFoundException('No players available');
+    const recentSet = new Set((recentSecretApiIds || []).map((id) => Number(id)));
+    let picked: any = null;
+
+    for (let i = 0; i < 24; i++) {
+      const skip = total > 1 ? Math.floor(Math.random() * total) : 0;
+      const candidate = await this.prisma.player.findFirst({
+        where,
+        orderBy: { apiId: 'asc' },
+        skip,
+      });
+      if (!candidate) continue;
+      if (!recentSet.has(Number(candidate.apiId))) {
+        picked = candidate;
+        break;
+      }
+      if (!picked) picked = candidate;
+    }
+
+    const player =
+      picked ||
+      (await this.prisma.player.findFirst({
+        where,
+        orderBy: { apiId: 'asc' },
+      }));
+    if (!player) throw new NotFoundException('No players available');
     const team = player.teamApiId
       ? await this.prisma.team.findUnique({ where: { apiId: player.teamApiId } })
       : null;
@@ -297,7 +326,7 @@ export class MultiplayerService {
 
     return {
       apiId: player.apiId,
-      name: player.name,
+      name: this.formatPlayerName(player),
       nationality: player.nationality,
       position: player.position,
       photoUrl: player.photoUrl,
@@ -329,5 +358,50 @@ export class MultiplayerService {
       code += chars[Math.floor(Math.random() * chars.length)];
     }
     return code;
+  }
+
+  private normalizeText(value: string) {
+    return (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[\.\-']/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private formatPlayerName(player: any) {
+    const firstname = String(player?.firstname || '').trim();
+    const lastname = String(player?.lastname || '').trim();
+    const fullName = `${firstname} ${lastname}`.trim();
+    if (fullName) return fullName;
+    return String(player?.name || '').trim();
+  }
+
+  private matchesPlayerGuess(guess: string, answer: string) {
+    const normalizedGuess = this.normalizeText(guess);
+    const normalizedAnswer = this.normalizeText(answer);
+    if (!normalizedGuess || !normalizedAnswer) return false;
+    if (normalizedGuess === normalizedAnswer) return true;
+
+    const answerTokens = normalizedAnswer.split(' ').filter(Boolean);
+    const guessTokens = normalizedGuess.split(' ').filter(Boolean);
+    if (guessTokens.length === 0 || answerTokens.length === 0) return false;
+
+    const allTokensMatch = guessTokens.every(
+      (guessToken) =>
+        guessToken.length >= 3 &&
+        answerTokens.some((answerToken) => answerToken === guessToken || answerToken.startsWith(guessToken)),
+    );
+    if (allTokensMatch) return true;
+
+    if (guessTokens.length === 1) {
+      const token = guessTokens[0];
+      if (token.length >= 3 && answerTokens.some((answerToken) => answerToken.includes(token))) {
+        return true;
+      }
+    }
+
+    return false;
   }
 }

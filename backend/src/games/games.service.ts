@@ -6,6 +6,7 @@ import { LineupRulesSchema } from './lineup.rules';
 import { SyncService } from '../sync/sync.service';
 import {
   IMPORTANT_PLAYERS_CATALOG,
+  ImportantPlayerSeed,
   getImportantPlayersMap,
   normalizeImportantName,
 } from '../common/important-players.catalog';
@@ -23,6 +24,8 @@ const IMPORTANT_SEED_ENTRIES = IMPORTANT_PLAYERS_CATALOG.map((entry) => ({
 
 @Injectable()
 export class GamesService {
+  private recentMarketSeedKeys: string[] = [];
+
   constructor(
     private prisma: PrismaService,
     private redis: RedisService,
@@ -375,113 +378,14 @@ export class GamesService {
   }
 
   async marketStart(leagueApiId?: number, pool: 'important' | 'all' = 'important') {
-    const effectivePool: 'important' = 'important';
-    const importantMap = getImportantPlayersMap();
-    const players = await this.prisma.player.findMany({
-      where: {
-        ...(leagueApiId ? { leagueApiId } : {}),
-      },
-      include: { team: true, stats: true },
-      take: 1200,
-    });
-
-    const candidates = players
-      .map((player) => {
-        const seed = this.findImportantSeedForPlayer(player);
-        const key = seed?.normalizedName;
-        const market = key ? importantMap.get(key) : undefined;
-        return {
-          player,
-          marketValueM: market?.marketValueM,
-          seedClub: market?.club || seed?.club,
-        };
-      })
-      .filter((row) => {
-        if (effectivePool === 'important') return Number(row.marketValueM || 0) > 0;
-        return true;
-      })
-      .filter((row) => {
-        if (pool === 'all') {
-          return row.player.stats.length > 0;
-        }
-        return true;
-      });
-
-    if (candidates.length === 0 && effectivePool === 'important') {
-      const statsFallback = await this.prisma.playerStat.findMany({
-        where: {
-          ...(leagueApiId ? { leagueApiId } : {}),
-          OR: [{ goals: { gt: 0 } }, { assists: { gt: 0 } }, { appearances: { gt: 0 } }, { minutes: { gt: 0 } }],
-        },
-        include: {
-          player: {
-            include: { team: true, stats: true },
-          },
-        },
-        take: 6000,
-      });
-
-      const playersByApiId = new Map<number, any>();
-      for (const entry of statsFallback) {
-        const player = entry.player;
-        if (!player?.apiId) continue;
-        if (!playersByApiId.has(player.apiId)) {
-          playersByApiId.set(player.apiId, player);
-        }
-      }
-
-      const fallbackCandidates = [...playersByApiId.values()]
-        .map((player) => {
-          const seed = this.findImportantSeedForPlayer(player);
-          const key = seed?.normalizedName;
-          const market = key ? importantMap.get(key) : undefined;
-          return {
-            player,
-            marketValueM: market?.marketValueM,
-            seedClub: market?.club || seed?.club,
-          };
-        })
-        .filter((row) => Number(row.marketValueM || 0) > 0);
-
-      if (fallbackCandidates.length > 0) {
-        const picked = fallbackCandidates[Math.floor(Math.random() * fallbackCandidates.length)];
-        const targetValueM = Number(picked.marketValueM);
-        const session = await this.prisma.gameSession.create({
-          data: { gameType: GameType.SORT, status: SessionStatus.ACTIVE },
-        });
-
-        await this.redis.setJson(
-          `market:${session.id}`,
-          {
-            playerApiId: picked.player.apiId,
-            targetValueM,
-          },
-          MARKET_TTL,
-        );
-
-        return {
-          sessionId: session.id,
-          player: {
-            apiId: picked.player.apiId,
-            name: picked.player.name,
-            photoUrl: picked.player.photoUrl,
-            teamName: picked.player.team?.name || picked.seedClub || 'Sin equipo',
-            leagueApiId: picked.player.leagueApiId,
-          },
-        };
-      }
-    }
-
-    if (candidates.length === 0) {
+    const seed = await this.pickMarketSeed(leagueApiId);
+    if (!seed) {
       await this.requestDataRefresh(undefined, leagueApiId);
       throw new NotFoundException('No market candidates found. Sync queued, try again shortly.');
     }
-
-    const picked = candidates[Math.floor(Math.random() * candidates.length)];
-    const targetValueM =
-      Number(picked.marketValueM || 0) > 0
-        ? Number(picked.marketValueM)
-        : Math.max(5, Math.round(this.computeFallbackMarketValue(picked.player.stats)));
+    const targetValueM = Number(seed.marketValueM || 0);
+    const dbPlayer = await this.findDbPlayerForMarketSeed(seed, leagueApiId);
+    const displayName = dbPlayer ? this.getPlayerDisplayName(dbPlayer) : seed.name;
     const session = await this.prisma.gameSession.create({
       data: { gameType: GameType.SORT, status: SessionStatus.ACTIVE },
     });
@@ -489,7 +393,7 @@ export class GamesService {
     await this.redis.setJson(
       `market:${session.id}`,
       {
-        playerApiId: picked.player.apiId,
+        playerApiId: dbPlayer?.apiId || null,
         targetValueM,
       },
       MARKET_TTL,
@@ -498,11 +402,11 @@ export class GamesService {
     return {
       sessionId: session.id,
       player: {
-        apiId: picked.player.apiId,
-        name: picked.player.name,
-        photoUrl: picked.player.photoUrl,
-        teamName: picked.player.team?.name || picked.seedClub || 'Sin equipo',
-        leagueApiId: picked.player.leagueApiId,
+        apiId: dbPlayer?.apiId || Math.round(Math.random() * 1_000_000_000),
+        name: displayName,
+        photoUrl: dbPlayer?.photoUrl || undefined,
+        teamName: dbPlayer?.team?.name || seed.club || 'Sin equipo',
+        leagueApiId: dbPlayer?.leagueApiId || leagueApiId || null,
       },
     };
   }
@@ -629,6 +533,95 @@ export class GamesService {
       }
     }
     return best;
+  }
+
+  private async pickMarketSeed(leagueApiId?: number) {
+    const dedupBySeed = new Map<string, ImportantPlayerSeed>();
+    for (const entry of IMPORTANT_PLAYERS_CATALOG) {
+      const key = `${normalizeImportantName(entry.name)}|${normalizeImportantName(entry.club)}`;
+      const current = dedupBySeed.get(key);
+      if (!current || Number(entry.marketValueM || 0) > Number(current.marketValueM || 0)) {
+        dedupBySeed.set(key, entry);
+      }
+    }
+    let seeds = [...dedupBySeed.values()].filter((entry) => Number(entry.marketValueM || 0) > 0);
+
+    if (leagueApiId) {
+      const dbPlayers = await this.prisma.player.findMany({
+        where: { leagueApiId },
+        include: { team: true },
+        take: 3000,
+      });
+      const availableKeys = new Set<string>();
+      for (const player of dbPlayers) {
+        const seed = this.findImportantSeedForPlayer(player);
+        if (!seed) continue;
+        const key = `${seed.normalizedName}|${seed.normalizedClub}`;
+        availableKeys.add(key);
+      }
+      const leagueSeeds = seeds.filter((entry) =>
+        availableKeys.has(`${normalizeImportantName(entry.name)}|${normalizeImportantName(entry.club)}`),
+      );
+      if (leagueSeeds.length > 0) {
+        seeds = leagueSeeds;
+      }
+    }
+
+    const nonRecent = seeds.filter(
+      (entry) =>
+        !this.recentMarketSeedKeys.includes(`${normalizeImportantName(entry.name)}|${normalizeImportantName(entry.club)}`),
+    );
+    const source = nonRecent.length > 0 ? nonRecent : seeds;
+    if (source.length === 0) return null;
+
+    const picked = source[Math.floor(Math.random() * source.length)];
+    const pickedKey = `${normalizeImportantName(picked.name)}|${normalizeImportantName(picked.club)}`;
+    this.recentMarketSeedKeys = [pickedKey, ...this.recentMarketSeedKeys.filter((key) => key !== pickedKey)].slice(0, 32);
+    return picked;
+  }
+
+  private async findDbPlayerForMarketSeed(seed: ImportantPlayerSeed, leagueApiId?: number) {
+    const tokens = String(seed.name || '')
+      .split(' ')
+      .map((token) => token.trim())
+      .filter(Boolean);
+    const first = tokens[0] || seed.name;
+    const last = tokens[tokens.length - 1] || seed.name;
+    const candidates = await this.prisma.player.findMany({
+      where: {
+        ...(leagueApiId ? { leagueApiId } : {}),
+        OR: [
+          { name: { contains: first, mode: 'insensitive' } },
+          { firstname: { contains: first, mode: 'insensitive' } },
+          { lastname: { contains: last, mode: 'insensitive' } },
+        ],
+      },
+      include: { team: true },
+      take: 200,
+    });
+    const normalizedSeedName = this.normalizeText(seed.name);
+    const normalizedSeedClub = this.normalizeText(seed.club);
+    let best: any = null;
+    let bestScore = -1;
+    for (const candidate of candidates) {
+      const candidateName = this.normalizeText(this.getPlayerDisplayName(candidate));
+      const candidateClub = this.normalizeText(candidate?.team?.name || '');
+      let score = 0;
+      if (candidateName === normalizedSeedName) score += 6;
+      if (this.scoreImportantNameCandidate(candidateName, normalizedSeedName) >= 5) score += 3;
+      if (candidateClub && this.matchesClub(candidateClub, normalizedSeedClub)) score += 2;
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 4 ? best : null;
+  }
+
+  private getPlayerDisplayName(player: any) {
+    const fullname = `${player?.firstname || ''} ${player?.lastname || ''}`.trim();
+    if (fullname) return fullname;
+    return String(player?.name || '').trim();
   }
 
   private scoreImportantNameCandidate(normalizedName: string, normalizedSeedName: string) {
