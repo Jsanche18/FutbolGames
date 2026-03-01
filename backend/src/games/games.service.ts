@@ -4,9 +4,14 @@ import { RedisService } from '../common/redis/redis.service';
 import { GameType, SessionStatus } from '@prisma/client';
 import { LineupRulesSchema } from './lineup.rules';
 import { SyncService } from '../sync/sync.service';
+import {
+  getImportantPlayersMap,
+  normalizeImportantName,
+} from '../common/important-players.catalog';
 
 const HANGMAN_TTL = 60 * 15;
 const SORT_TTL = 60 * 15;
+const MARKET_TTL = 60 * 15;
 
 @Injectable()
 export class GamesService {
@@ -296,6 +301,96 @@ export class GamesService {
     return { correct: isCorrect, correctOrder };
   }
 
+  async marketStart(leagueApiId?: number, pool: 'important' | 'all' = 'important') {
+    const importantMap = getImportantPlayersMap();
+    const players = await this.prisma.player.findMany({
+      where: {
+        ...(leagueApiId ? { leagueApiId } : {}),
+      },
+      include: { team: true, stats: true },
+      take: 1200,
+    });
+
+    const candidates = players
+      .map((player) => {
+        const key = normalizeImportantName(
+          `${player.firstname || ''} ${player.lastname || ''}`.trim() || player.name,
+        );
+        const market = importantMap.get(key);
+        return {
+          player,
+          marketValueM: market?.marketValueM,
+          seedClub: market?.club,
+        };
+      })
+      .filter((row) => {
+        if (pool === 'important') return Number(row.marketValueM || 0) > 0;
+        return true;
+      })
+      .filter((row) => {
+        if (pool === 'all') {
+          return row.player.stats.length > 0;
+        }
+        return true;
+      });
+
+    if (candidates.length === 0) {
+      await this.requestDataRefresh(undefined, leagueApiId);
+      throw new NotFoundException('No market candidates found. Sync queued, try again shortly.');
+    }
+
+    const picked = candidates[Math.floor(Math.random() * candidates.length)];
+    const targetValueM =
+      Number(picked.marketValueM || 0) > 0
+        ? Number(picked.marketValueM)
+        : Math.max(5, Math.round(this.computeFallbackMarketValue(picked.player.stats)));
+    const session = await this.prisma.gameSession.create({
+      data: { gameType: GameType.SORT, status: SessionStatus.ACTIVE },
+    });
+
+    await this.redis.setJson(
+      `market:${session.id}`,
+      {
+        playerApiId: picked.player.apiId,
+        targetValueM,
+      },
+      MARKET_TTL,
+    );
+
+    return {
+      sessionId: session.id,
+      player: {
+        apiId: picked.player.apiId,
+        name: picked.player.name,
+        photoUrl: picked.player.photoUrl,
+        teamName: picked.player.team?.name || picked.seedClub || 'Sin equipo',
+        leagueApiId: picked.player.leagueApiId,
+      },
+    };
+  }
+
+  async marketGuess(sessionId: number, guessValueM: number) {
+    const state = await this.redis.getJson<any>(`market:${sessionId}`);
+    if (!state) throw new NotFoundException('Session not found');
+    const target = Number(state.targetValueM || 0);
+    const guess = Number(guessValueM || 0);
+    const diff = Math.abs(target - guess);
+    const correct = diff <= 5;
+    const veryClose = diff <= 10;
+
+    await this.prisma.gameSession.update({
+      where: { id: sessionId },
+      data: { status: SessionStatus.FINISHED },
+    });
+
+    return {
+      correct,
+      veryClose,
+      targetValueM: target,
+      diffM: diff,
+    };
+  }
+
   private computeLineupScore(stats: any[]) {
     const byPlayer: Record<string, any[]> = {};
     for (const stat of stats) {
@@ -354,23 +449,7 @@ export class GamesService {
   }
 
   private getFeaturedPlayerNames() {
-    return new Set([
-      'kylian mbappe',
-      'thibaut courtois',
-      'erling haaland',
-      'vinicius junior',
-      'jude bellingham',
-      'kevin de bruyne',
-      'harry kane',
-      'mohamed salah',
-      'rodri',
-      'lautaro martinez',
-      'robert lewandowski',
-      'bukayo saka',
-      'pedri',
-      'florian wirtz',
-      'jamal musiala',
-    ]);
+    return new Set([...getImportantPlayersMap().keys()]);
   }
 
   private normalizeText(value: string) {
@@ -381,6 +460,19 @@ export class GamesService {
       .replace(/\./g, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  private computeFallbackMarketValue(stats: any[]) {
+    const best = (stats || []).reduce(
+      (acc, curr) => {
+        const accScore = this.computeStatImportance(acc);
+        const currScore = this.computeStatImportance(curr);
+        return currScore > accScore ? curr : acc;
+      },
+      {} as any,
+    );
+    const score = this.computeStatImportance(best);
+    return Math.min(120, Math.max(8, score));
   }
 
   private async requestDataRefresh(teamApiId?: number, leagueApiId?: number) {
