@@ -68,6 +68,42 @@ export class SyncService implements OnModuleInit {
     return this.queue.add('sync-bootstrap', { season });
   }
 
+  async getCoverage() {
+    const leagueIds = [...this.getBootstrapLeagueIds()];
+    const leagues = await this.prisma.league.findMany({
+      where: { apiId: { in: leagueIds } },
+      select: { apiId: true, name: true, countryCode: true },
+      orderBy: { name: 'asc' },
+    });
+
+    const coverage = [];
+    for (const league of leagues) {
+      const players = await this.prisma.player.count({ where: { leagueApiId: league.apiId } });
+      const stats = await this.prisma.playerStat.count({ where: { leagueApiId: league.apiId } });
+      const playersWithStats = await this.prisma.player.count({
+        where: {
+          leagueApiId: league.apiId,
+          stats: { some: { leagueApiId: league.apiId } },
+        },
+      });
+      coverage.push({
+        leagueApiId: league.apiId,
+        leagueName: league.name,
+        countryCode: league.countryCode,
+        players,
+        stats,
+        playersWithStats,
+        playersWithoutStats: Math.max(players - playersWithStats, 0),
+      });
+    }
+
+    return {
+      leaguesConfigured: leagueIds,
+      leaguesFound: coverage.length,
+      coverage,
+    };
+  }
+
   private async handleLeagues(season?: number) {
     await this.throttle();
     const data = await this.api.getLeagues({ season });
@@ -84,9 +120,7 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handleTeams(leagueApiId: number, season?: number) {
-    await this.throttle();
-    const data = await this.api.getTeams({ league: leagueApiId, season });
-    const response = (data as any)?.response || [];
+    const response = await this.fetchAllTeams(leagueApiId, season);
     const teams = response.map((item: any) => ({
       apiId: item.team?.id,
       name: item.team?.name,
@@ -101,41 +135,45 @@ export class SyncService implements OnModuleInit {
   }
 
   private async handlePlayers(teamApiId: number, season?: number) {
-    await this.throttle();
-    const data = await this.api.getPlayers({ team: teamApiId, season });
-    const response = (data as any)?.response || [];
+    const response = await this.fetchAllPlayers(teamApiId, season);
     for (const item of response) {
       const player = item.player;
-      const stats = item.statistics?.[0];
+      const statistics = (item.statistics || []) as any[];
+      const preferredStats =
+        statistics.find((entry) => entry?.team?.id === teamApiId) ||
+        statistics.find((entry) => entry?.games?.position) ||
+        statistics[0];
+      const fullName = this.buildPlayerName(player?.name, player?.firstname, player?.lastname);
       await this.prisma.player.upsert({
         where: { apiId: player.id },
         update: {
-          name: player.name,
+          name: fullName,
           firstname: player.firstname,
           lastname: player.lastname,
           age: player.age,
           nationality: player.nationality,
           photoUrl: player.photo,
-          position: stats?.games?.position,
-          teamApiId: stats?.team?.id,
-          leagueApiId: stats?.league?.id,
-          season: stats?.league?.season,
+          position: preferredStats?.games?.position,
+          teamApiId: preferredStats?.team?.id,
+          leagueApiId: preferredStats?.league?.id,
+          season: preferredStats?.league?.season,
         },
         create: {
           apiId: player.id,
-          name: player.name,
+          name: fullName,
           firstname: player.firstname,
           lastname: player.lastname,
           age: player.age,
           nationality: player.nationality,
           photoUrl: player.photo,
-          position: stats?.games?.position,
-          teamApiId: stats?.team?.id,
-          leagueApiId: stats?.league?.id,
-          season: stats?.league?.season,
+          position: preferredStats?.games?.position,
+          teamApiId: preferredStats?.team?.id,
+          leagueApiId: preferredStats?.league?.id,
+          season: preferredStats?.league?.season,
         },
       });
-      if (stats) {
+      for (const stats of statistics) {
+        if (!stats?.league?.id || !stats?.team?.id) continue;
         await this.prisma.playerStat.upsert({
           where: {
             playerApiId_leagueApiId_season_teamApiId: {
@@ -219,6 +257,7 @@ export class SyncService implements OnModuleInit {
     const leagues = await this.api.getLeagues({ season: resolvedSeason });
     const response = (leagues as any)?.response || [];
     const allowed = this.getBootstrapLeagueNames();
+    const allowedIds = this.getBootstrapLeagueIds();
 
     const selected = response
       .map((item: any) => ({
@@ -229,7 +268,11 @@ export class SyncService implements OnModuleInit {
         season: item.seasons?.[0]?.year || resolvedSeason,
         countryCode: item.country?.code,
       }))
-      .filter((l: any) => l.apiId && this.matchesLeague(l.name, l.country, allowed));
+      .filter(
+        (l: any) =>
+          l.apiId &&
+          (allowedIds.has(Number(l.apiId)) || this.matchesLeague(l.name, l.country, allowed)),
+      );
 
     if (selected.length > 0) {
       await this.prisma.league.createMany({
@@ -248,6 +291,36 @@ export class SyncService implements OnModuleInit {
       await this.handleLeaguePlayers(league.apiId, resolvedSeason);
       await this.throttle();
     }
+  }
+
+  private async fetchAllTeams(leagueApiId: number, season?: number) {
+    const all: any[] = [];
+    let page = 1;
+    let totalPages = 1;
+    while (page <= totalPages) {
+      await this.throttle();
+      const data = await this.api.getTeams({ league: leagueApiId, season, page });
+      const response = (data as any)?.response || [];
+      all.push(...response);
+      totalPages = Number((data as any)?.paging?.total || 1);
+      page += 1;
+    }
+    return all;
+  }
+
+  private async fetchAllPlayers(teamApiId: number, season?: number) {
+    const all: any[] = [];
+    let page = 1;
+    let totalPages = 1;
+    while (page <= totalPages) {
+      await this.throttle();
+      const data = await this.api.getPlayers({ team: teamApiId, season, page });
+      const response = (data as any)?.response || [];
+      all.push(...response);
+      totalPages = Number((data as any)?.paging?.total || 1);
+      page += 1;
+    }
+    return all;
   }
 
   private getDefaultSeason() {
@@ -278,6 +351,18 @@ export class SyncService implements OnModuleInit {
     ];
   }
 
+  private getBootstrapLeagueIds() {
+    const raw = this.configService.get<string>('BOOTSTRAP_LEAGUE_IDS');
+    if (raw) {
+      const ids = raw
+        .split(',')
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      return new Set(ids);
+    }
+    return new Set([140, 61, 307, 253, 128, 71, 39, 78, 135]);
+  }
+
   private matchesLeague(name: string | undefined, country: string | undefined, allowed: string[]) {
     if (!name) return false;
     const normalizedName = name.toLowerCase();
@@ -287,11 +372,27 @@ export class SyncService implements OnModuleInit {
       if (parts.length === 2) {
         return (
           normalizedCountry === parts[0].toLowerCase() &&
-          normalizedName === parts[1].toLowerCase()
+          (normalizedName === parts[1].toLowerCase() ||
+            normalizedName.includes(parts[1].toLowerCase()) ||
+            parts[1].toLowerCase().includes(normalizedName))
         );
       }
-      return normalizedName === candidate.toLowerCase();
+      return (
+        normalizedName === candidate.toLowerCase() ||
+        normalizedName.includes(candidate.toLowerCase()) ||
+        candidate.toLowerCase().includes(normalizedName)
+      );
     });
+  }
+
+  private buildPlayerName(name?: string, firstname?: string, lastname?: string) {
+    const first = (firstname || '').trim();
+    const last = (lastname || '').trim();
+    const fallback = (name || '').trim();
+    if (first && last) return `${first} ${last}`;
+    if (first) return first;
+    if (last) return last;
+    return fallback;
   }
 
   private async throttle() {

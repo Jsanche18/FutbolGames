@@ -111,7 +111,7 @@ export class FootballService {
       const primaryPosition = stats?.games?.position || player.position || '';
       return {
         apiId: player.id,
-        name: player.name,
+        name: this.buildPlayerName(player.name, player.firstname, player.lastname),
         photoUrl: player.photo,
         nationality: player.nationality,
         teamName: stats?.team?.name,
@@ -136,7 +136,7 @@ export class FootballService {
     return {
       items: dbPlayers.map((player) => ({
         apiId: player.apiId,
-        name: player.name,
+        name: this.buildPlayerName(player.name, player.firstname ?? undefined, player.lastname ?? undefined),
         photoUrl: player.photoUrl ?? undefined,
         nationality: player.nationality ?? undefined,
         teamName: player.team?.name ?? undefined,
@@ -160,5 +160,15 @@ export class FootballService {
     };
     await this.redis.setJson(cacheKey, result, CACHE_TTL);
     return result;
+  }
+
+  private buildPlayerName(name?: string, firstname?: string, lastname?: string) {
+    const first = (firstname || '').trim();
+    const last = (lastname || '').trim();
+    const fallback = (name || '').trim();
+    if (first && last) return `${first} ${last}`;
+    if (first) return first;
+    if (last) return last;
+    return fallback;
   }
 }

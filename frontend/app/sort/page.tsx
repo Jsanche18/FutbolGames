@@ -93,7 +93,20 @@ export default function SortPage() {
                     className="cursor-move rounded-xl border border-clay/10 bg-black/40 px-4 py-3 text-clay/80 hover:border-lime/40"
                   >
                     <div className="flex items-center justify-between">
-                      <span>{p.name}</span>
+                      <span className="flex items-center gap-2">
+                        {p.photoUrl ? (
+                          <img src={p.photoUrl} alt={p.name} className="h-8 w-8 rounded-full object-cover" />
+                        ) : (
+                          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-lime/30 text-xs text-ink">
+                            {String(p.name || '')
+                              .split(' ')
+                              .slice(0, 2)
+                              .map((part: string) => part[0] || '')
+                              .join('')}
+                          </span>
+                        )}
+                        <span>{p.name}</span>
+                      </span>
                       <span className="text-xs text-clay/60">?</span>
                     </div>
                   </div>
@@ -119,7 +132,20 @@ export default function SortPage() {
                       className="rounded-xl border border-clay/10 bg-black/40 px-4 py-2 text-clay/80"
                     >
                       <div className="flex items-center justify-between">
-                        <span>{p.name}</span>
+                        <span className="flex items-center gap-2">
+                          {p.photoUrl ? (
+                            <img src={p.photoUrl} alt={p.name} className="h-7 w-7 rounded-full object-cover" />
+                          ) : (
+                            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-lime/30 text-[10px] text-ink">
+                              {String(p.name || '')
+                                .split(' ')
+                                .slice(0, 2)
+                                .map((part: string) => part[0] || '')
+                                .join('')}
+                            </span>
+                          )}
+                          <span>{p.name}</span>
+                        </span>
                         <span className="text-xs text-lime">{p.value}</span>
                       </div>
                     </div>
@@ -138,7 +164,24 @@ export default function SortPage() {
                         className="rounded-xl border border-lime/30 bg-black/40 px-4 py-2 text-clay/80"
                       >
                         <div className="flex items-center justify-between">
-                          <span>{player.name}</span>
+                          <span className="flex items-center gap-2">
+                            {player.photoUrl ? (
+                              <img
+                                src={player.photoUrl}
+                                alt={player.name}
+                                className="h-7 w-7 rounded-full object-cover"
+                              />
+                            ) : (
+                              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-lime/30 text-[10px] text-ink">
+                                {String(player.name || '')
+                                  .split(' ')
+                                  .slice(0, 2)
+                                  .map((part: string) => part[0] || '')
+                                  .join('')}
+                              </span>
+                            )}
+                            <span>{player.name}</span>
+                          </span>
                           <span className="text-xs text-lime">{player.value}</span>
                         </div>
                       </div>

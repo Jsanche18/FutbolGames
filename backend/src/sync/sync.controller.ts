@@ -1,4 +1,4 @@
-import { Controller, Post, Query, Param } from '@nestjs/common';
+import { Controller, Get, Post, Query, Param } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { SyncService } from './sync.service';
 
@@ -30,5 +30,10 @@ export class SyncController {
   @Post('bootstrap')
   syncBootstrap(@Query('season') season?: string) {
     return this.syncService.enqueueBootstrap(season ? Number(season) : undefined);
+  }
+
+  @Get('coverage')
+  coverage() {
+    return this.syncService.getCoverage();
   }
 }
