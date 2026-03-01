@@ -70,3 +70,21 @@ export class SortSubmitDto {
   @IsArray()
   orderedPlayerApiIds!: number[];
 }
+
+export class MarketStartDto {
+  @IsOptional()
+  @IsNumber()
+  leagueApiId?: number;
+
+  @IsOptional()
+  @IsString()
+  pool?: 'important' | 'all';
+}
+
+export class MarketGuessDto {
+  @IsInt()
+  sessionId!: number;
+
+  @IsNumber()
+  guessValueM!: number;
+}
