@@ -5,7 +5,7 @@ import { ApiFootballClient } from './api-football.client';
 import { ApiFootballTrophyProvider } from './trophy.provider';
 import { mapAllowedPositions } from './positions';
 import { ConfigService } from '@nestjs/config';
-import { getImportantPlayersMap } from '../common/important-players.catalog';
+import { getImportantPlayersMap, IMPORTANT_PLAYERS_CATALOG } from '../common/important-players.catalog';
 
 const CACHE_TTL = 60 * 60;
 
@@ -198,7 +198,7 @@ export class FootballService {
     let items = [...mergedByApiId.values()];
     if (correctedQuery) {
       const normalizedQuery = this.normalizeText(correctedQuery);
-      items = items.filter((item) => this.normalizeText(item.name || '').includes(normalizedQuery));
+      items = items.filter((item) => this.matchesQuery(item, normalizedQuery));
     }
     if (teamApiId) {
       items = items.filter((item) => Number(item.teamApiId) === teamApiId);
@@ -306,6 +306,36 @@ export class FootballService {
 
   private isStarByName(name?: string) {
     const normalized = this.normalizeText(name || '');
-    return getImportantPlayersMap().has(normalized);
+    if (getImportantPlayersMap().has(normalized)) return true;
+    for (const seed of IMPORTANT_PLAYERS_CATALOG) {
+      const seedName = this.normalizeText(seed.name);
+      if (normalized === seedName) return true;
+      if (normalized.length >= 4 && (seedName.includes(normalized) || normalized.includes(seedName))) {
+        return true;
+      }
+      const seedTokens = seedName.split(' ').filter(Boolean);
+      const lastSeedToken = seedTokens[seedTokens.length - 1];
+      if (lastSeedToken && normalized === lastSeedToken) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private matchesQuery(item: any, normalizedQuery: string) {
+    const baseName = this.normalizeText(item?.name || '');
+    if (baseName.includes(normalizedQuery)) return true;
+
+    const tokens = baseName.split(' ').filter(Boolean);
+    if (tokens.some((token) => token.includes(normalizedQuery) || normalizedQuery.includes(token))) {
+      return true;
+    }
+
+    const correctedFromQuery = this.correctQuery(normalizedQuery);
+    const correctedNormalized = this.normalizeText(correctedFromQuery);
+    if (correctedNormalized && baseName.includes(correctedNormalized)) {
+      return true;
+    }
+    return false;
   }
 }

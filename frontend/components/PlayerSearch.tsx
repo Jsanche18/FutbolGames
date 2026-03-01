@@ -30,13 +30,14 @@ export default function PlayerSearch({ onSelect, leagueApiId }: Props) {
   const season = Number(process.env.NEXT_PUBLIC_DEFAULT_SEASON || 2024);
 
   const search = async (value: string) => {
-    if (!value || value.trim().length < 2) {
+    const normalizedValue = value.trim();
+    if (!importantOnly && (!normalizedValue || normalizedValue.length < 2)) {
       setResults([]);
       return;
     }
     const res = await api.get('/players/search', {
       params: {
-        q: value,
+        ...(normalizedValue ? { q: normalizedValue } : {}),
         season,
         ...(leagueApiId ? { leagueApiId } : {}),
         ...(teamApiId ? { teamApiId: Number(teamApiId) } : {}),
@@ -46,7 +47,7 @@ export default function PlayerSearch({ onSelect, leagueApiId }: Props) {
       },
     });
     const items = res.data?.items || [];
-    setResults(items.slice(0, 10));
+    setResults(items.slice(0, 15));
     setActiveIndex(0);
     setOpen(true);
   };
